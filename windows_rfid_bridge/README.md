@@ -32,7 +32,7 @@
 
 ```bat
 cd %USERPROFILE%\Desktop
-git clone https://github.com/vision-picking-robot/robotArm_Controller_demo.git
+git clone https://github.com/leechanghwanspace/test.git robotArm_Controller_demo
 cd robotArm_Controller_demo
 windows_rfid_bridge\1_setup.bat
 ```
@@ -40,8 +40,8 @@ windows_rfid_bridge\1_setup.bat
 `.venv-win` 가상환경에 `pyscard`, `httpx`만 설치한다(로봇 제어용 패키지는 설치하지 않는다).
 이미 클론했다면 `git pull` 후 같은 배치 파일을 다시 실행한다.
 
-**Git 없이 받기:** https://github.com/vision-picking-robot/robotArm_Controller_demo 에서
-**Code → Download ZIP**으로 받아 압축을 풀고(예: 바탕화면 `robotArm_Controller_demo-main`),
+**Git 없이 받기:** https://github.com/leechanghwanspace/test 에서
+**Code → Download ZIP**으로 받아 압축을 풀고(예: 바탕화면 `test-main`),
 그 폴더의 `windows_rfid_bridge\1_setup.bat`을 더블클릭한다. 이후 모든 배치 파일도 더블클릭으로 실행된다.
 업데이트는 ZIP을 다시 받아 덮어쓴다(`windows_rfid_bridge\api_url.txt`와 `.venv-win`은 남겨도 된다).
 

@@ -30,7 +30,7 @@ sudo apt update
 sudo apt install -y git python3.12-venv
 mkdir -p ~/vision_lab
 cd ~/vision_lab
-git clone https://github.com/vision-picking-robot/robotArm_Controller_demo.git
+git clone https://github.com/leechanghwanspace/test.git robotArm_Controller_demo
 ```
 
 이미 clone한 노트북은 위 clone 명령을 생략하고 다음부터 실행한다.
