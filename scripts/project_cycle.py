@@ -376,9 +376,15 @@ class Cycle:
         self.log('step', name=name, kind='movel', tcp=[round(v, 1) for v in cur[:3]],
                  seconds=round(time.monotonic() - t0, 1))
 
-    def grip(self, name, target, ok, current=None):
+    def grip(self, name, target, ok, current=None, settle_s=0.0):
         self._estop_check()
         fb = self.raw.grip(target, current)
+        # At a low force limit the fingers keep creeping into a soft or slipping object for a
+        # moment after the DRL settle time; poll the status until they stop (code 1, moving 0).
+        deadline = time.monotonic() + settle_s
+        while fb['code'] == 1 and fb['moving'] and time.monotonic() < deadline:
+            time.sleep(0.5)
+            fb = self.raw.grip(-1)
         if fb['code'] != 1 or fb['moving'] or not ok(fb['position_pulses']):
             raise RuntimeError(f"{name}: gripper not confirmed ({fb['result']}, pos={fb['position_pulses']})")
         self.log('step', name=name, kind='gripper', position=fb['position_pulses'], current=fb['current'])
@@ -510,7 +516,7 @@ class Cycle:
 
     def grip_object(self):
         limit = getattr(self.args, 'grip_current', 150)
-        closed = self.grip('grip', 740, lambda p: p >= 0, current=limit)
+        closed = self.grip('grip', 740, lambda p: p >= 0, current=limit, settle_s=4.0)
         # Empty close reaches ~739 at low current; an object stalls the fingers earlier, or (thin
         # or soft packs) near full close with the current pinned at the limit.
         self.holding = closed['position_pulses'] < 700 or (

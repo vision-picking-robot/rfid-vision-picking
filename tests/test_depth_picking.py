@@ -102,3 +102,26 @@ def test_unsteady_scene_is_rejected(web, monkeypatch):
     cyc.depth_cfg['samples'] = 3
     with pytest.raises(RuntimeError, match='not steady'):
         cyc.detect_by_depth('canned_meat')
+
+
+def test_grip_waits_for_creeping_fingers_to_stop(monkeypatch):
+    feedback = iter([dict(code=1, result='ok', position_pulses=292, current=150, moving=1),
+                     dict(code=1, result='ok', position_pulses=380, current=150, moving=1),
+                     dict(code=1, result='ok', position_pulses=397, current=150, moving=0)])
+    cyc = object.__new__(project_cycle.Cycle)
+    cyc.raw = SimpleNamespace(grip=lambda target, current=None: next(feedback))
+    cyc.estop, cyc.logged = None, []
+    cyc.log = lambda event, **kw: cyc.logged.append((event, kw))
+    monkeypatch.setattr(project_cycle.time, 'sleep', lambda s: None)
+    fb = cyc.grip('grip', 740, lambda p: p >= 0, current=150, settle_s=4.0)
+    assert fb['position_pulses'] == 397 and not fb['moving']
+
+
+def test_grip_still_fails_if_the_gripper_never_settles(monkeypatch):
+    cyc = object.__new__(project_cycle.Cycle)
+    cyc.raw = SimpleNamespace(grip=lambda target, current=None: dict(code=1, result='ok', position_pulses=300, current=150, moving=1))
+    cyc.estop = None
+    cyc.log = lambda event, **kw: None
+    monkeypatch.setattr(project_cycle.time, 'sleep', lambda s: None)
+    with pytest.raises(RuntimeError, match='not confirmed'):
+        cyc.grip('grip', 740, lambda p: p >= 0, current=150, settle_s=0.0)
