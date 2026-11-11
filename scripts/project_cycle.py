@@ -44,6 +44,10 @@ WAYPOINT_TOL = 10.0
 # (alarm 1206 "NOT REACHABLE") or ends short near the singularity.
 ELBOW_MIN_DEG = 20.0
 REACH_STEP_MM = 10.0
+# Box slot 1's place height (slot z + place_extra) was proven with the taught snack box held 120 mm
+# above its bottom. A taller held object hangs further below the fingertip (a bottle grasped at
+# 152 mm hit the box at the same height), so raise the place height by the extra hang.
+PLACE_REF_HANG_MM = 120.0
 
 
 class Logger:
@@ -550,6 +554,7 @@ class Cycle:
         min_z = floor_z + height + 20.0 if height else grasp[2] + 40.0
         approach_z = self.reach_z('approach', grasp, grasp[2] + up, min_z)
         above_z = self.reach_z('lift', grasp, grasp[2] + up + self.args.lift_extra, approach_z)
+        self._hang = max(0.0, grasp[2] - floor_z)  # held object length below the fingertip
         self._approach = [*grasp[:2], approach_z, *grasp[3:]]
         self._above = [*grasp[:2], above_z, *grasp[3:]]
         self._product = target['product']
@@ -588,7 +593,10 @@ class Cycle:
         slot_pose = self.poses['box_slots'][slot]['posx']
         self.j('via_carry', self.carry['via_point'])
         self.j('box_carry', self.carry['box_high'])
-        self.l('box_place', [*slot_pose[:2], slot_pose[2] + self.args.place_extra, *slot_pose[3:]], self.args.dvel)
+        extra = max(0.0, getattr(self, '_hang', 0.0) - PLACE_REF_HANG_MM)
+        if extra:
+            self.log('place_raised', hang_mm=round(self._hang, 1), extra_mm=round(extra, 1))
+        self.l('box_place', [*slot_pose[:2], slot_pose[2] + self.args.place_extra + extra, *slot_pose[3:]], self.args.dvel)
         self.grip('release', 0, lambda p: p <= OPEN_MAX)
         carry_z = P['home']['posx'][2] + self.args.lift_extra
         self.l('box_retreat', [*slot_pose[:2], carry_z, *slot_pose[3:]])

@@ -170,3 +170,20 @@ def test_reach_z_rejects_when_the_object_top_cannot_be_cleared():
 def test_reach_z_keeps_requested_height_when_reachable():
     cyc = reach_cycle(limit_z=500.0)
     assert cyc.reach_z('lift', [496, 189, 150, 0, 180, 0], 400.0, 300.0) == 400.0 and cyc.logged == []
+
+
+@pytest.mark.parametrize('hang, place_z', [(152.2, 85 + 100 + 32.2), (120.0, 185.0), (32.0, 185.0)])
+def test_place_height_rises_for_objects_hanging_below_the_reference(hang, place_z):
+    cyc = object.__new__(project_cycle.Cycle)
+    moves = []
+    cyc.poses = {'box_slots': {1: {'posx': [-373.0, 0.0, 85.0, 3.26, 180.0, -176.74], 'taught': True}},
+                 'poses': {'home': {'posx': [373.0, 0.0, 285.0, 0, 180, 0]}}, 'motion': {'approach_offset_z': 150.0}}
+    cyc.carry = {'via_point': [90, 0, 0, 0, 0, 0], 'box_high': [180, 0, 0, 0, 0, 0]}
+    cyc.args = SimpleNamespace(place_extra=100.0, lift_extra=100.0, dvel=15.0)
+    cyc.log = lambda event, **kw: None
+    cyc.j = lambda name, posj: None
+    cyc.l = lambda name, pose, vel=None, tol=None: moves.append((name, pose[2]))
+    cyc.grip = lambda *a, **k: {}
+    cyc._hang = hang
+    cyc.place('BOX-01')
+    assert dict(moves)['box_place'] == pytest.approx(place_z)
