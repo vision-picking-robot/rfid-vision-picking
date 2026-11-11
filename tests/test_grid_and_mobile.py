@@ -128,11 +128,11 @@ def test_mobile_remote_controller_and_priority_scan_mode(tmp_path):
         assert status['robot_state'] == 'STANDBY'
 
         # 3. Phone NFC tagging is blocked while in external_reader mode
-        blocked = client.post('/api/v1/mobile/nfc-tag', json={'uid': '0BE5715D', 'box_slot': 1})
+        blocked = client.post('/api/v1/mobile/nfc-tag', json={'uid': '0B71E55D', 'box_slot': 1})
         assert blocked.status_code == 409
 
         # 4. Human places box 1 -> notifies robot arm via mobile remote
-        placed = client.post('/api/v1/mobile/box-placed', json={'box_slot': 1, 'uid': '0BE5715D', 'quantity': 1})
+        placed = client.post('/api/v1/mobile/box-placed', json={'box_slot': 1, 'uid': '0B71E55D', 'quantity': 1})
         assert placed.status_code == 200
         placed_data = placed.json()
         assert placed_data['box_slot'] == 1

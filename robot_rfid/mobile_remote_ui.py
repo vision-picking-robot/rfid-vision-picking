@@ -587,13 +587,13 @@ MOBILE_REMOTE_HTML = """<!DOCTYPE html>
         보조 태그 모드가 활성화되었습니다. 디바이스 후면을 상자 태그에 접촉하거나 수동 패킷을 전송하세요.
       </p>
       <div class="slot-grid">
-        <button type="button" class="slot-card" onclick="sendPhoneNfc('0BE5715D', 1)">
+        <button type="button" class="slot-card" onclick="sendPhoneNfc('0B71E55D', 1)">
           <div class="slot-top">
             <span class="slot-tag">NFC PACKET</span>
             <span class="slot-action-label">SEND</span>
           </div>
           <div class="slot-name">빼빼로 태그 전송</div>
-          <div class="slot-uid">0BE5715D · BOX-01</div>
+          <div class="slot-uid">0B71E55D · BOX-01</div>
         </button>
         <button type="button" class="slot-card" onclick="startWebNfc()">
           <div class="slot-top">
@@ -618,13 +618,13 @@ MOBILE_REMOTE_HTML = """<!DOCTYPE html>
     </div>
 
     <div class="slot-grid">
-      <button type="button" class="slot-card" onclick="notifyBoxPlaced(1, '0BE5715D')">
+      <button type="button" class="slot-card" onclick="notifyBoxPlaced(1, '0B71E55D')">
         <div class="slot-top">
           <span class="slot-tag">SLOT 01</span>
           <span class="slot-action-label">DISPATCH</span>
         </div>
         <div class="slot-name">아몬드 빼빼로</div>
-        <div class="slot-uid">UID 0BE5715D</div>
+        <div class="slot-uid">UID 0B71E55D</div>
       </button>
 
       <button type="button" class="slot-card" onclick="notifyBoxPlaced(2, '0B71E75D')">
@@ -896,14 +896,14 @@ MOBILE_REMOTE_HTML = """<!DOCTYPE html>
         await ndef.scan();
         showToast('디바이스 후면에 RFID/NFC 태그를 접촉하세요.');
         ndef.onreading = event => {
-          const uid = (event.serialNumber || '0BE5715D').replace(/:/g, '').toUpperCase();
+          const uid = (event.serialNumber || '0B71E55D').replace(/:/g, '').toUpperCase();
           sendPhoneNfc(uid, 1);
         };
       } catch (_) {
         showToast('NFC 권한을 허용해주세요.');
       }
     } else {
-      sendPhoneNfc('0BE5715D', 1);
+      sendPhoneNfc('0B71E55D', 1);
     }
   }
 

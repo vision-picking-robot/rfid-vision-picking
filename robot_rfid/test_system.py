@@ -36,13 +36,13 @@ class SystemTests(unittest.TestCase):
     def test_uid_validation(self):
         self.assertEqual(normalize_uid('00:00:00:a1'), '000000A1')
         self.assertEqual(normalize_uid('04:00:01:02:03:04:05'), '04000102030405')
-        for value in ('A1', '00::00:00:A1', '0000000G', '0BE5715D00'):
+        for value in ('A1', '00::00:00:A1', '0000000G', '0B71E55D00'):
             with self.assertRaises(ValueError): normalize_uid(value)
 
     def test_api_idempotency_queue_and_websocket(self):
         with self.client.websocket_connect('/ws') as ws:
             self.assertIsNone(ws.receive_json()['task'])
-            body = dict(uid='0B:E5:71:5D', quantity=2, event_id='one')
+            body = dict(uid='0B:71:E5:5D', quantity=2, event_id='one')
             response = self.client.post('/api/v1/scan-event', json=body)
             self.assertEqual(response.status_code, 200)
             self.assertEqual(ws.receive_json()['product']['yolo_class_name'], 'snack_pepero')
@@ -94,7 +94,7 @@ class SystemTests(unittest.TestCase):
         robot.stop.assert_called_once()
         robot.home.assert_not_called()
         robot.place.assert_not_called()
-        self.assertEqual(self.app.state.database.product('0BE5715D')['status'],'DEFECTIVE')
+        self.assertEqual(self.app.state.database.product('0B71E55D')['status'],'DEFECTIVE')
 
     def test_calibration_depth_and_bounds(self):
         cal = Calibration([[100,0,50],[0,100,50],[0,0,1]],np.eye(4),[-1,-1,0],[1,1,2],[0,0,0])
@@ -107,7 +107,7 @@ class SystemTests(unittest.TestCase):
         class ConnectionFailure(Exception): pass
         connection = Mock()
         connection.connect.side_effect = [ConnectionFailure(), None]
-        connection.transmit.return_value = ([11,229,113,93],0x90,0)
+        connection.transmit.return_value = ([11,113,229,93],0x90,0)
         reader = Mock()
         reader.__str__ = Mock(return_value='ACS ACR1555 Virtual PC/SC')
         reader.createConnection.return_value = connection
@@ -117,7 +117,7 @@ class SystemTests(unittest.TestCase):
         stop = Mock()
         stop.is_set.return_value = False
         with patch.dict(sys.modules,modules):
-            self.assertEqual(RFIDScanner().scan(stop=stop),'0BE5715D')
+            self.assertEqual(RFIDScanner().scan(stop=stop),'0B71E55D')
             connection.transmit.assert_called_with(GET_UID)
             self.assertEqual(connection.disconnect.call_count,2)
             connection.connect.side_effect = None

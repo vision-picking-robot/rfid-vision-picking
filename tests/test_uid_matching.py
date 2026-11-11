@@ -12,17 +12,16 @@ KNOWN = [seed[0] for seed in SEEDS]
 
 
 def test_seed_uids_follow_reader_values():
-    assert KNOWN == ['0BE5715D', '0B71E75D', '0B71E65D', '0B71ED5D', '0B71EC5D']
+    assert KNOWN == ['0B71E55D', '0B71E75D', '0B71E65D', '0B71ED5D', '0B71EC5D']
 
 
 @pytest.mark.parametrize('raw, expected', [
-    ('0BE5715D', '0BE5715D'),
-    ('0b e5 71 5d', '0BE5715D'),
+    ('0B71E55D', '0B71E55D'),
+    ('0b 71 e5 5d', '0B71E55D'),
     ('0B:71:E7:5D', '0B71E75D'),
     ('E75D', '0B71E75D'),        # 4 of 8 chars
     ('71E6', '0B71E65D'),
-    ('E571', '0BE5715D'),
-    ('715D', '0BE5715D'),        # only the new pepero UID ends in 715D
+    ('E55D', '0B71E55D'),
     ('0B71EDFF', '0B71ED5D'),    # last byte garbled, distinguishing byte intact
 ])
 def test_partial_reads_resolve_to_one_tag(raw, expected):
@@ -42,21 +41,21 @@ def test_short_or_unrelated_reads_are_unknown(raw):
 
 
 def test_clean_uid():
-    assert clean_uid(' 0b-e5:71 5d ') == '0BE5715D'
+    assert clean_uid(' 0b-71:e5 5d ') == '0B71E55D'
 
 
-def test_existing_db_moves_pepero_to_new_uid_with_history(tmp_path):
+def test_existing_db_moves_product_to_seed_uid_with_history(tmp_path):
     path = tmp_path / 'rfid.db'
     Database(path).initialize()
-    with sqlite3.connect(path) as db:  # simulate a DB created with the old seed and one finished task
+    with sqlite3.connect(path) as db:  # simulate a DB created with an older seed UID and one finished task
         db.execute('PRAGMA foreign_keys=OFF')
-        db.execute("UPDATE product_tag_mappings SET tag_uid='0B71E55D' WHERE sku_code='LOTTE-PEPERO-01'")
+        db.execute("UPDATE product_tag_mappings SET tag_uid='0BE5715D' WHERE sku_code='LOTTE-PEPERO-01'")
         db.execute("INSERT INTO tasks(task_id,event_id,tag_uid,quantity,completed,status,created_at) "
-                   "VALUES ('t1','e1','0B71E55D',1,1,'COMPLETED','2026-11-10')")
+                   "VALUES ('t1','e1','0BE5715D',1,1,'COMPLETED','2026-11-10')")
     Database(path).initialize()
     with sqlite3.connect(path) as db:
-        assert db.execute("SELECT tag_uid FROM product_tag_mappings WHERE sku_code='LOTTE-PEPERO-01'").fetchone()[0] == '0BE5715D'
-        assert db.execute("SELECT tag_uid FROM tasks WHERE task_id='t1'").fetchone()[0] == '0BE5715D'
+        assert db.execute("SELECT tag_uid FROM product_tag_mappings WHERE sku_code='LOTTE-PEPERO-01'").fetchone()[0] == '0B71E55D'
+        assert db.execute("SELECT tag_uid FROM tasks WHERE task_id='t1'").fetchone()[0] == '0B71E55D'
         assert db.execute('SELECT COUNT(*) FROM product_tag_mappings').fetchone()[0] == 5
         assert db.execute('PRAGMA foreign_key_check').fetchall() == []
 

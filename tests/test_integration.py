@@ -130,10 +130,10 @@ def test_rfid_routes_and_button_commands_integrated(controller, tmp_path):
         tags = client.get('/api/v1/tags')
         assert tags.status_code == 200
         assert len(tags.json()['tags']) == 5
-        tag = client.get('/api/v1/tags/0BE5715D')
+        tag = client.get('/api/v1/tags/0B71E55D')
         assert tag.status_code == 200
         assert tag.json()['yolo_class_name'] == 'snack_pepero'
-        scan = client.post('/api/v1/rfid/scan', json={'uid': '0B:E5:71:5D', 'quantity': 1})
+        scan = client.post('/api/v1/rfid/scan', json={'uid': '0B:71:E5:5D', 'quantity': 1})
         assert scan.status_code == 200
-        assert scan.json()['uid'] == '0BE5715D'
+        assert scan.json()['uid'] == '0B71E55D'
         assert scan.json()['product']['target_box_id'] == 'BOX-01'

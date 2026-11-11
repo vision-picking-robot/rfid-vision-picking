@@ -17,7 +17,7 @@ MIN_PARTIAL_UID = 4  # hex chars (2 bytes) needed before a partial read may matc
 
 
 def clean_uid(value: str) -> str:
-    """Reader output as upper-case hex only: '0b e5:71-5d' -> '0BE5715D'. Length is not checked."""
+    """Reader output as upper-case hex only: '0b e5:71-5d' -> '0B71E55D'. Length is not checked."""
     return re.sub(r'[^0-9A-F]', '', str(value or '').upper())
 
 
@@ -58,7 +58,7 @@ def match_uid(raw: str, known_uids) -> str:
 
 
 SEEDS = [
-    ('0BE5715D', 'LOTTE-PEPERO-01', '아몬드 빼빼로', 'CONFECTIONERY', 0, 'snack_pepero', '2026-11-01 13:45:00', '2027-12-25 19:00:00', 2500, 'BOX-01'),
+    ('0B71E55D', 'LOTTE-PEPERO-01', '아몬드 빼빼로', 'CONFECTIONERY', 0, 'snack_pepero', '2026-11-01 13:45:00', '2027-12-25 19:00:00', 2500, 'BOX-01'),
     ('0B71E75D', 'BEV-PET-500ML', '제로 콜라 500ml', 'BEVERAGE', 1, 'beverage_pet', '2026-11-05 09:30:00', '2027-05-04 23:59:59', 1600, 'BOX-02'),
     ('0B71E65D', 'CAN-SPAM-200G', '스팸 클래식 200g', 'CANNED', 2, 'canned_meat', '2026-10-15 10:00:00', '2029-10-14 23:59:59', 4800, 'BOX-03'),
     ('0B71ED5D', 'SAN-WIPES-100', '물티슈', 'SANITARY', 3, 'wet_wipes', '2026-11-02 16:20:00', '2028-11-01 23:59:59', 2200, 'BOX-04'),

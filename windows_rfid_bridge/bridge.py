@@ -91,7 +91,10 @@ def submit(api, uid, quantity):
         try:
             r = httpx.post(f'{api}/api/v1/scan-event', json=payload, timeout=10)
             if r.is_error:
-                say(f'X 등록 거부 {r.status_code}: {r.text[:200]}  (DB에 등록된 태그인지 확인)')
+                if 'active task' in r.text:
+                    say('X 이 상품은 이미 대기/진행 중인 작업이 있어 새로 등록하지 않았습니다. (대시보드에서 작업 확인)')
+                else:
+                    say(f'X 등록 거부 {r.status_code}: {r.text[:200]}  (DB에 등록된 태그인지 확인)')
                 return None
             body = r.json()
             task = body.get('task') or {}

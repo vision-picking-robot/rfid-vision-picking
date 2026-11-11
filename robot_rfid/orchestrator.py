@@ -110,7 +110,7 @@ class SimRobot:
 
 
 class SimScanner:
-    def scan(self): return '0BE5715D'
+    def scan(self): return '0B71E55D'
 
 
 class SimVision:
