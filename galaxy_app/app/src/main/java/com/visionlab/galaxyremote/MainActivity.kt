@@ -82,11 +82,11 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         topBar.addView(connectBtn)
 
         modeStatusText = TextView(this).apply {
-            text = "📡 현재 모드: 전용 리더기 우선 (폰 NFC 대기 중)"
+            text = "MODE · 전용 리더기 우선 (모바일 NFC 대기)"
             setTextColor(Color.parseColor("#38BDF8"))
-            textSize = 12f
-            setPadding(28, 8, 28, 12)
-            setBackgroundColor(Color.parseColor("#0F172A"))
+            textSize = 11.5f
+            setPadding(28, 10, 28, 12)
+            setBackgroundColor(Color.parseColor("#06080F"))
         }
 
         webView = WebView(this).apply {
@@ -161,12 +161,12 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
                         NfcAdapter.FLAG_READER_NFC_B or
                         NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK
                 adapter.enableReaderMode(this, this, flags, null)
-                modeStatusText.text = "📱 현재 모드: 갤럭시 뒷면 직접 NFC 태깅 활성화됨 (보조 모드)"
-                modeStatusText.setTextColor(Color.parseColor("#C084FC"))
+                modeStatusText.text = "MODE · 후면 직접 NFC 태깅 활성화 (보조 모드)"
+                modeStatusText.setTextColor(Color.parseColor("#38BDF8"))
             } else {
                 adapter.disableReaderMode(this)
-                modeStatusText.text = "📡 현재 모드: 전용 하드웨어 리더기 우선 (폰 NFC 비활성)"
-                modeStatusText.setTextColor(Color.parseColor("#38BDF8"))
+                modeStatusText.text = "MODE · 전용 하드웨어 리더기 우선 (모바일 NFC 비활성)"
+                modeStatusText.setTextColor(Color.parseColor("#94A3B8"))
             }
         }
     }
@@ -187,7 +187,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         val uidHex = uidBytes.joinToString("") { "%02X".format(it) }
         vibratePhone(180)
         runOnUiThread {
-            Toast.makeText(this, "📱 NFC 태그 인식: $uidHex", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "NFC 태그 인식: $uidHex", Toast.LENGTH_SHORT).show()
             webView.evaluateJavascript("if(window.onNativeNfcTag){window.onNativeNfcTag('$uidHex');}", null)
         }
     }
