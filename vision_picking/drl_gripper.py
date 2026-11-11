@@ -161,7 +161,7 @@ class DrlGripper:
             time.sleep(0.2)
         raise TimeoutError('A DRL program is still running on the controller')
 
-    def run(self, target, timeout=20.0):
+    def run(self, target, timeout=20.0, current=GOAL_CURRENT_MA):
         DrlStart, GetDrlState, _ = self.types
         self._wait_stopped(10.0)
         nonce = random.randint(1, 250)
@@ -169,7 +169,7 @@ class DrlGripper:
             self._wait_stopped(10.0)
         nonce = random.randint(1, 250)
         settle = 1.5 if target >= 0 else 0.0
-        started = self._call(self.start, DrlStart.Request(robot_system=0, code=build_program(target, nonce, settle)))
+        started = self._call(self.start, DrlStart.Request(robot_system=0, code=build_program(target, nonce, settle, current)))
         if not started.success:
             raise RuntimeError('drl_start refused (robot must be AUTO/STANDBY with no DRL program running)')
         started_at = time.monotonic()

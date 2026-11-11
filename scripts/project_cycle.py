@@ -113,7 +113,7 @@ class MockRaw:
         self.posx = list(pos)
         return 0
 
-    def grip(self, target):
+    def grip(self, target, current=None):
         if target >= 0:
             self.position = target
         return dict(code=1, result='ok', voltage=24.1, position_pulses=self.position, current=0, moving=0)
@@ -176,8 +176,10 @@ class RealRaw:
     def movel(self, pos, vel, acc, ref, mod, radius):
         return self.ros.motion.movel(pos, vel, acc, ref, mod, radius)
 
-    def grip(self, target):
-        return self.hand.run(target)
+    def grip(self, target, current=None):
+        if current is None:
+            return self.hand.run(target)
+        return self.hand.run(target, current=current)
 
     def raise_posj(self, posj, dz):
         """Joint pose whose flange is dz higher with the same orientation and solution space."""
@@ -368,9 +370,9 @@ class Cycle:
         self.log('step', name=name, kind='movel', tcp=[round(v, 1) for v in cur[:3]],
                  seconds=round(time.monotonic() - t0, 1))
 
-    def grip(self, name, target, ok):
+    def grip(self, name, target, ok, current=None):
         self._estop_check()
-        fb = self.raw.grip(target)
+        fb = self.raw.grip(target, current)
         if fb['code'] != 1 or fb['moving'] or not ok(fb['position_pulses']):
             raise RuntimeError(f"{name}: gripper not confirmed ({fb['result']}, pos={fb['position_pulses']})")
         self.log('step', name=name, kind='gripper', position=fb['position_pulses'], current=fb['current'])
@@ -447,8 +449,12 @@ class Cycle:
         self.l('descend', grasp, self.args.dvel)
 
     def grip_object(self):
-        closed = self.grip('grip', 740, lambda p: p >= 0)
-        self.holding = closed['position_pulses'] < 700
+        limit = getattr(self.args, 'grip_current', 150)
+        closed = self.grip('grip', 740, lambda p: p >= 0, current=limit)
+        # Empty close reaches ~739 at low current; an object stalls the fingers earlier, or (thin
+        # or soft packs) near full close with the current pinned at the limit.
+        self.holding = closed['position_pulses'] < 700 or (
+            closed['position_pulses'] < 735 and closed['current'] >= 0.8 * limit)
         self.log('grasp', product=self._product, holding=self.holding, position=closed['position_pulses'],
                  current=closed['current'], note='object detected' if self.holding else 'empty close (no object)')
         if self.args.require_object and not self.holding:
@@ -581,6 +587,8 @@ def main(argv=None):
                         help='mm added to the lift and carry height (home/via/box transfer)')
     parser.add_argument('--place-extra', type=float, default=100.0,
                         help='mm above the taught box slot z where the object is released')
+    parser.add_argument('--grip-current', type=int, default=150,
+                        help='gripper goal current in mA for the grasp (force limit; was 400, which crushed snack boxes)')
     parser.add_argument('--require-object', action='store_true', help='fail when the gripper closes empty')
     parser.add_argument('--remote-rfid', action='store_true',
                         help='with --api: wait for tasks queued by another PC (POST /api/v1/scan-event) instead of scanning')
