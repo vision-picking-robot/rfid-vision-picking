@@ -12,7 +12,7 @@ from .contracts import PickRequest
 from .legacy import config_loader as legacy
 from .legacy.gripper_feedback import parse_feedback, wait_for_feedback
 from .legacy.safe_move import DR_BASE, MotionError, SafeMover
-from .pick_plane import Calibration, PickPlane
+from .pick_plane import Calibration, DEFAULT_GRID_COLS, DEFAULT_GRID_ROWS, PickPlane, compute_safe_grasp_z
 from .store import DomainError
 from .paths import ROOT, state_directory
 
@@ -104,8 +104,123 @@ class Controller:
         low, high, current = (feedback[k] for k in ('min_position_pulses', 'max_position_pulses', 'min_current'))
         if not all(type(v) is int for v in (low, high, current)) or not (0 < low <= high < 740 and current > 0):
             raise DomainError('Invalid grasp feedback range', 422)
+        grid = plane.grid_cell(request.detection.center_px, rows=DEFAULT_GRID_ROWS, cols=DEFAULT_GRID_COLS)
+        grasp_info = compute_safe_grasp_z(limits.floor_z, limits.z_min, product)
         return dict(mock_mode=self.mock_mode, frame='robot_base', units=dict(position='mm', orientation='deg_ZYZ'),
-                    product=product_name, pick_pose=pose, route=route, grasp_feedback=feedback)
+                    product=product_name, pick_pose=pose, route=route, grasp_feedback=feedback,
+                    grid_cell=grid, grasp_height_info=grasp_info)
+
+    def plan_grid(self, request: PickRequest, rows: int = DEFAULT_GRID_ROWS, cols: int = DEFAULT_GRID_COLS,
+                  measured_height_mm: float | None = None):
+        """Plan a 2-stage Coarse-to-Fine grid pick (15x15 grid cell approach -> fine XY align -> crush-safe Z descend)."""
+        base_plan = self.plan(request)
+        cfg = self.config
+        calibration = Calibration(**cfg['calibration'])
+        plane = PickPlane(calibration)
+        grid = plane.grid_cell(request.detection.center_px, rows=rows, cols=cols)
+        product_name = base_plan['product']
+        product = self.products[product_name]['real']
+        limits = legacy.floor_limit(self.poses, 'real')
+        grasp_info = compute_safe_grasp_z(limits.floor_z, limits.z_min, product, measured_height_mm=measured_height_mm)
+
+        pose = list(base_plan['pick_pose'])
+        pose[2] = grasp_info['grasp_z_mm']
+        approach_z = pose[2] + self.poses['motion']['approach_offset_z']
+
+        cell_xy = grid['cell_center_base_mm'][:2]
+        coarse_approach = [cell_xy[0], cell_xy[1], approach_z, *pose[3:]]
+        fine_approach = [pose[0], pose[1], approach_z, *pose[3:]]
+
+        home = legacy.get_pose(self.poses, 'home', 'real')['posx']
+        via = legacy.get_pose(self.poses, 'via_point', 'real')['posx']
+        slot = legacy.get_box_slot(self.poses, request.box_slot, 'real')['posx']
+        place = [*slot[:3], *slot[3:]]
+        place_high = [*place[:2], approach_z, *place[3:]]
+
+        route = [
+            ('home', home),
+            ('grid_coarse_approach', coarse_approach),
+            ('fine_align_approach', fine_approach),
+            ('pick', pose),
+            ('lift', fine_approach),
+            ('via', [*via[:2], approach_z, *via[3:]]),
+            ('place_approach', place_high),
+            ('place', place),
+            ('retreat', place_high),
+            ('home', home),
+        ]
+        bounds = cfg['workspace_mm']
+        for name, target in route:
+            if len(target) != 6 or not all(math.isfinite(v) for v in target):
+                raise DomainError('Invalid pose', 422)
+            if target[2] < limits.z_min or any(not lo <= value <= hi for lo, value, hi in zip(bounds['min'], target[:3], bounds['max'])):
+                raise DomainError(f'{name} exceeds configured workspace/floor', 422)
+
+        return {
+            **base_plan,
+            'pick_pose': pose,
+            'route': route,
+            'grid_cell': grid,
+            'grasp_height_info': grasp_info,
+        }
+
+    def move_to_grid_pick(self, request: PickRequest, rows: int = DEFAULT_GRID_ROWS, cols: int = DEFAULT_GRID_COLS,
+                          measured_height_mm: float | None = None):
+        """Execute serialized 2-stage Coarse-to-Fine grid pick and place."""
+        digest = hashlib.sha256((f'grid:{rows}x{cols}:{measured_height_mm}:' + request.model_dump_json()).encode()).hexdigest()
+        if not self.lock.acquire(blocking=False):
+            raise DomainError('Robot busy', 409)
+        try:
+            with self.db() as db:
+                row = db.execute('SELECT digest,result FROM jobs WHERE id=?', (request.request_id,)).fetchone()
+                if row:
+                    if row[0] != digest:
+                        raise DomainError('request_id reused with different content', 409)
+                    return json.loads(row[1])
+            plan = self.plan_grid(request, rows=rows, cols=cols, measured_height_mm=measured_height_mm)
+            detection_key = json.dumps([request.camera.model_dump(), request.frame_id, request.object_index, 'grid'], sort_keys=True)
+            result = dict(request_id=request.request_id, state='running', mock_mode=self.mock_mode,
+                          completed_steps=[], grid_cell=plan['grid_cell'], grasp_height_info=plan['grasp_height_info'])
+            try:
+                with self.db() as db:
+                    db.execute('INSERT INTO jobs VALUES (?,?,?,?)', (request.request_id, digest, detection_key, json.dumps(result)))
+            except sqlite3.IntegrityError as exc:
+                raise DomainError('Detection already consumed; obtain a new frame', 409) from exc
+            self.cancel.clear()
+            try:
+                self.ensure_backend()
+                limits = legacy.floor_limit(self.poses, 'real')
+                motion = self.poses['motion']
+                mover = SafeMover(limits.z_min, self.backend, motion['max_vel'], motion['max_acc'])
+                self.get_gripper_status()
+                for name, target in plan['route']:
+                    if self.cancel.is_set():
+                        raise MotionError('Cancelled; no automatic retreat or release')
+                    mover.movel(target, vel=self.config.get('velocity', 10.0), acc=self.config.get('acceleration', 10.0), ref=DR_BASE, radius=0.0)
+                    result['completed_steps'].append(name)
+                    self.save(request.request_id, result)
+                    if self.cancel.is_set():
+                        raise MotionError('Cancelled; no automatic retreat or release')
+                    if name == 'grid_coarse_approach':
+                        self.gripper_open()
+                    if name == 'pick':
+                        self.gripper_close(plan['grasp_feedback'])
+                    if name in ('lift', 'via', 'place_approach'):
+                        self.check_hold(plan['grasp_feedback'])
+                    if name == 'place':
+                        self.gripper_open()
+                result['state'] = 'completed'
+            except Exception as exc:
+                result.update(state='unknown', error=str(exc))
+                if self.backend:
+                    try:
+                        self.backend.stop()
+                    except Exception as stop_error:
+                        result['stop_error'] = str(stop_error)
+            self.save(request.request_id, result)
+            return result
+        finally:
+            self.lock.release()
 
     def ensure_backend(self):
         self.gate()

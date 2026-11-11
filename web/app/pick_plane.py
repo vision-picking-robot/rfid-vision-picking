@@ -75,6 +75,36 @@ def triangle_weights(vertices, point):
     return (area(point, b, c) / scale, area(a, point, c) / scale, area(a, b, point) / scale)
 
 
+DEFAULT_GRID_ROWS = 15
+DEFAULT_GRID_COLS = 15
+
+
+def compute_safe_grasp_z(floor_z: float, z_min: float, product_real: dict, measured_height_mm: float | None = None) -> dict:
+    """Compute a crush-safe and miss-safe grasp Z height in robot BASE (mm)."""
+    nominal_h = float(product_real.get("grasp_height_from_floor") or 120.0)
+    top_bite_mm = float(product_real.get("top_bite_offset_mm", 20.0))
+    min_crush_ratio = float(product_real.get("min_crush_ratio", 0.55))
+    min_safe_h = float(product_real.get("min_safe_height_from_floor", max(15.0, nominal_h * 0.5)))
+
+    if measured_height_mm is not None and math.isfinite(measured_height_mm) and measured_height_mm > 0:
+        target_from_top = measured_height_mm - top_bite_mm
+        crush_limit = measured_height_mm * min_crush_ratio
+        raw_h = max(target_from_top, crush_limit, min_safe_h)
+    else:
+        raw_h = max(nominal_h, min_safe_h)
+
+    grasp_z = max(float(floor_z) + raw_h, float(z_min))
+    return {
+        "grasp_z_mm": round(grasp_z, 2),
+        "height_from_floor_mm": round(grasp_z - float(floor_z), 2),
+        "floor_z_mm": float(floor_z),
+        "z_min_mm": float(z_min),
+        "nominal_height_mm": nominal_h,
+        "measured_height_mm": measured_height_mm,
+        "crush_protected": True,
+    }
+
+
 class PickPlane:
     def __init__(self, calibration):
         self.camera = camera = calibration.camera
@@ -102,13 +132,24 @@ class PickPlane:
         drop = max(range(3), key=lambda axis: abs(normal[axis]))
         plane = [[v for axis, v in enumerate(p) if axis != drop] for p in self.xyz]
         convex(plane)
+        self._drop = drop
+        self._plane = plane
         # In homogeneous barycentric coordinates the first three vertices are the
         # basis. The fourth correspondence fixes the three scales up to a common factor.
-        self.scales = [b/a for a, b in zip(triangle_weights(self.pixels, self.pixels[3]),
-                                            triangle_weights(plane, plane[3]))]
+        px_w3 = triangle_weights(self.pixels, self.pixels[3])
+        pl_w3 = triangle_weights(plane, plane[3])
+        self.scales = [b/a for a, b in zip(px_w3, pl_w3)]
+        unit_w3 = (1.0, -1.0, 1.0)
+        self._unit_scales = [u/a for a, u in zip(px_w3, unit_w3)]
+        self._base_unit_scales = [u/b for b, u in zip(pl_w3, unit_w3)]
 
     def contains(self, pixel):
         turns = [area(self.pixels[i-1], self.pixels[i], pixel) for i in range(4)]
+        return min(turns) >= -1e-7 or max(turns) <= 1e-7
+
+    def contains_base(self, xyz):
+        pt2d = [v for axis, v in enumerate(xyz[:3]) if axis != self._drop]
+        turns = [area(self._plane[i-1], self._plane[i], pt2d) for i in range(4)]
         return min(turns) >= -1e-7 or max(turns) <= 1e-7
 
     def project(self, pixel):
@@ -117,6 +158,127 @@ class PickPlane:
         if abs(total) <= 1e-12:
             return None
         return [sum(w*p[axis] for w, p in zip(weights, self.xyz)) / total for axis in range(3)]
+
+    def pixel_to_uv(self, pixel):
+        """Projective mapping from pixel (u, v) to normalized quadrilateral coordinates (s, t) in [0, 1]^2."""
+        weights = [s*w for s, w in zip(self._unit_scales, triangle_weights(self.pixels, pixel))]
+        total = sum(weights)
+        if abs(total) <= 1e-12:
+            return None
+        w0, w1, w2 = (w / total for w in weights)
+        return (w1 + w2, w2)
+
+    def uv_to_pixel(self, s: float, t: float):
+        """Inverse projective mapping from normalized (s, t) in [0, 1]^2 to camera pixel [u, v]."""
+        bar_u = (1.0 - s, s - t, t)
+        inv_weights = [u / scale for u, scale in zip(bar_u, self._unit_scales)]
+        total = sum(inv_weights)
+        if abs(total) <= 1e-12:
+            return None
+        return [sum(w * p[axis] for w, p in zip(inv_weights, self.pixels[:3])) / total for axis in range(2)]
+
+    def uv_to_base(self, s: float, t: float):
+        """Map normalized quadrilateral coordinates (s, t) in [0, 1]^2 to robot BASE [X, Y, Z]."""
+        px = self.uv_to_pixel(s, t)
+        return None if px is None else self.project(px)
+
+    def base_to_uv(self, xyz):
+        """Map a robot BASE coordinate [X, Y, ...] on the plane to normalized (s, t) in [0, 1]^2."""
+        pt2d = [v for axis, v in enumerate(xyz[:3]) if axis != self._drop]
+        weights = [s*w for s, w in zip(self._base_unit_scales, triangle_weights(self._plane, pt2d))]
+        total = sum(weights)
+        if abs(total) <= 1e-12:
+            return None
+        w0, w1, w2 = (w / total for w in weights)
+        return (w1 + w2, w2)
+
+    def base_to_pixel(self, xyz):
+        """Map a robot BASE coordinate [X, Y, ...] on the plane to camera pixel [u, v]."""
+        uv = self.base_to_uv(xyz)
+        return None if uv is None else self.uv_to_pixel(uv[0], uv[1])
+
+    def grid_cell(self, pixel, rows: int = DEFAULT_GRID_ROWS, cols: int = DEFAULT_GRID_COLS):
+        """Locate the (row, col) cell in an N x M (default 15 x 15) checkerboard grid and compute coarse-to-fine targets."""
+        if rows < 1 or cols < 1:
+            raise DomainError("그리드 행·열 개수는 1 이상이어야 합니다.", 422)
+        if not self.contains(pixel):
+            raise DomainError("선택한 중심이 보정한 작업 영역 밖에 있습니다.")
+        uv = self.pixel_to_uv(pixel)
+        exact_base = self.project(pixel)
+        if uv is None or exact_base is None:
+            raise DomainError("탐지 중심을 작업면에 투영할 수 없습니다.")
+        s, t = uv
+        s_clamped = min(1.0, max(0.0, s))
+        t_clamped = min(1.0, max(0.0, t))
+        col = min(cols - 1, max(0, int(math.floor(s_clamped * cols))))
+        row = min(rows - 1, max(0, int(math.floor(t_clamped * rows))))
+
+        s0, s1 = col / cols, (col + 1) / cols
+        t0, t1 = row / rows, (row + 1) / rows
+        cs, ct = (col + 0.5) / cols, (row + 0.5) / rows
+
+        cell_center_px = self.uv_to_pixel(cs, ct)
+        cell_center_base = self.uv_to_base(cs, ct)
+        if cell_center_px is None or cell_center_base is None:
+            raise DomainError("그리드 셀 중심을 투영할 수 없습니다.")
+
+        fine_offset = [round(exact_base[i] - cell_center_base[i], 3) for i in range(3)]
+        corners_uv = [(s0, t0), (s1, t0), (s1, t1), (s0, t1)]
+        cell_corners_px = [self.uv_to_pixel(u_val, v_val) for u_val, v_val in corners_uv]
+        cell_corners_base = [self.uv_to_base(u_val, v_val) for u_val, v_val in corners_uv]
+
+        return {
+            "row": row,
+            "col": col,
+            "rows": rows,
+            "cols": cols,
+            "cell_id": f"R{row:02d}_C{col:02d}",
+            "uv": [round(s, 6), round(t, 6)],
+            "pixel": [float(pixel[0]), float(pixel[1])],
+            "cell_center_px": [round(v, 2) for v in cell_center_px],
+            "cell_center_base_mm": [round(v, 2) for v in cell_center_base],
+            "cell_center_pose": [round(v, 2) for v in cell_center_base] + list(self.abc),
+            "exact_base_mm": [round(v, 2) for v in exact_base],
+            "exact_pose": [round(v, 2) for v in exact_base] + list(self.abc),
+            "fine_offset_mm": fine_offset,
+            "cell_corners_px": [[round(c[0], 2), round(c[1], 2)] for c in cell_corners_px if c is not None],
+            "cell_corners_base_mm": [[round(c[0], 2), round(c[1], 2), round(c[2], 2)] for c in cell_corners_base if c is not None],
+        }
+
+    def grid_cell_from_base(self, xyz, rows: int = DEFAULT_GRID_ROWS, cols: int = DEFAULT_GRID_COLS):
+        """Locate the (row, col) cell in an N x M grid given a robot BASE [X, Y, ...] coordinate."""
+        if not self.contains_base(xyz):
+            raise DomainError("선택한 BASE 좌표가 보정한 작업 영역 밖에 있습니다.")
+        px = self.base_to_pixel(xyz)
+        if px is None:
+            raise DomainError("BASE 좌표를 영상 픽셀로 역투영할 수 없습니다.")
+        return self.grid_cell(px, rows=rows, cols=cols)
+
+    def grid_map(self, rows: int = DEFAULT_GRID_ROWS, cols: int = DEFAULT_GRID_COLS):
+        """Generate full N x M (default 15 x 15) checkerboard metadata for UI overlay and path planning."""
+        if rows < 1 or cols < 1:
+            raise DomainError("그리드 행·열 개수는 1 이상이어야 합니다.", 422)
+        cells = []
+        for r in range(rows):
+            for c in range(cols):
+                cs, ct = (c + 0.5) / cols, (r + 0.5) / rows
+                center_px = self.uv_to_pixel(cs, ct)
+                center_base = self.uv_to_base(cs, ct)
+                cells.append({
+                    "row": r,
+                    "col": c,
+                    "cell_id": f"R{r:02d}_C{c:02d}",
+                    "center_px": [round(v, 2) for v in center_px] if center_px else None,
+                    "center_base_mm": [round(v, 2) for v in center_base] if center_base else None,
+                })
+        return {
+            "rows": rows,
+            "cols": cols,
+            "total_cells": rows * cols,
+            "roi_corners_px": self.pixels,
+            "roi_corners_base_mm": self.xyz,
+            "cells": cells,
+        }
 
     def target(self, pixel):
         xyz = self.project(pixel) if self.contains(pixel) else None

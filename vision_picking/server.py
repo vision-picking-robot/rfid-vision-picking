@@ -53,6 +53,14 @@ def create_app(controller=None):
     def pick(body: PickRequest):
         return controller.move_to_pick(body)
 
+    @app.post('/api/v1/grid-plan')
+    def grid_plan(body: PickRequest, rows: int = 15, cols: int = 15, measured_height_mm: float | None = None):
+        return controller.plan_grid(body, rows=rows, cols=cols, measured_height_mm=measured_height_mm)
+
+    @app.post('/api/v1/grid-pick')
+    def grid_pick(body: PickRequest, rows: int = 15, cols: int = 15, measured_height_mm: float | None = None):
+        return controller.move_to_grid_pick(body, rows=rows, cols=cols, measured_height_mm=measured_height_mm)
+
     @app.post('/api/v1/move-target')
     def move_target(body: PickRequest):
         return controller.move_to_pick(body, target_only=True)

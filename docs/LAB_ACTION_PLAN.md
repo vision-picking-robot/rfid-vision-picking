@@ -204,22 +204,30 @@ Z축 하한 안전값(SafeMover z_min) 검증도 철저히 유지해 주세요.
 
 ---
 
-## 6. [로드맵] 갤럭시 전용 리모트 컨트롤러 앱 기획
+## 6. 갤럭시 전용 리모트 컨트롤러 앱 & 15×15 그리드 API (구현 완료)
 
 ### 🎯 핵심 운용 원칙
-- **주력 시연 (Priority 1)**: 전용 하드웨어 RFID 리더기(`ACR1555U` / 로봇팔 라벨 스캔) 우선 시연.
-- **갤럭시 앱의 기본 역할**: 현장 작업자를 위한 **무선 원격 조작반(HMI) + 실시간 모니터링 + 상자 배치/완료 햅틱 알림**.
-- **스마트폰 자체 NFC 태깅**: 앱 내 보조 옵션(토글 스위치)으로 내장하되, 기본은 비활성화 상태로 두고 **외장 리더기 부재 시 또는 확장 시연 시에만 켜서 가동**.
+- **주력 시연 (Priority 1)**: 전용 하드웨어 RFID 리더기(`ACR1555U` / 로봇팔 라벨 스캔) 우선 시연 (`scan_mode = "external_reader"`).
+- **갤럭시 앱의 기본 역할**: 현장 작업자를 위한 **무선 원격 조작반(HMI) + 15×15 바둑판 모니터링 + 상자 배치/완료 햅틱 알림**.
+- **스마트폰 자체 NFC 태깅**: 앱 내 보조 옵션(토글 스위치 `scan_mode = "phone_nfc"`)으로 내장되어, 기본은 비활성화 상태로 두고 **보조 시연 시에만 켜서 가동**.
 
-### 📱 갤럭시 앱 주요 UI 및 기능 구성
-1. **스캔 모드 토글 (선택형)**:
-   - `[●] 전용 리더기 연동 모드 (기본값)`: ACR1555U 리더기 또는 로봇팔 스캔 신호 대기.
-   - `[○] 갤럭시 직접 NFC 모드 (보조)`: 폰 뒷면을 상자에 대면 즉시 태깅되어 작업 큐 등록 (필요 시에만 활성화).
-2. **원격 제어 패널**:
-   - `[📦 상자 1~4 배치 완료]`: 사람이 상자를 놓은 뒤 터치 시 로봇 피킹 시퀀스 트리거.
-   - `[▶ 재개]` / `[⏸ 일시정지]` / `[🏠 홈 복귀]` / `[■ 비상 정지]`.
-3. **작업 완료 햅틱(진동) 알림**:
-   - 로봇이 물품을 상자에 적재 완료하고 복귀하면, 휴대폰 진동과 함께 **"✅ 빼빼로 적재 완료! 상자를 회수하세요."** 팝업 알림.
-4. **실시간 모니터링 뷰**:
-   - RealSense 카메라 탑뷰 영상 (바둑판 그리드 오버레이) + 로봇 현재 상태(STANDBY/PICKING/PLACING).
+### 🔌 구현 완료된 핵심 모듈 & 엔드포인트
+1. **15×15 바둑판 그리드 & 과자 찌그러짐 방지 높이 변환 (`vision_picking/pick_plane.py`)**:
+   - `PickPlane.grid_cell(pixel, rows=15, cols=15)`: 225개 정밀 셀 중 `(row, col)` 식별, 셀 중심 BASE 좌표(`cell_center_base_mm`) 및 미세 오차(`fine_offset_mm`) 산출.
+   - `compute_safe_grasp_z(...)`: RealSense 실측 높이 또는 상품 규격 기반 과자 찌그러짐 방지 및 헛손질 방지 하강 Z 높이 산출.
+2. **2단계(Coarse-to-Fine) 그리드 피킹 (`vision_picking/controller.py` & `scripts/project_cycle.py`)**:
+   - `POST /api/v1/grid-plan`, `POST /api/v1/grid-pick`: `home` ➔ `grid_coarse_approach`(15×15 셀 중심 상공) ➔ `fine_align_approach`(ΔX, ΔY 미세 정렬) ➔ `pick`(안전 Z 하강) ➔ `place`.
+   - `python scripts/project_cycle.py --pixel u,v --measured-height 135.0`: CLI에서 즉시 15×15 그리드 2단계 접근 및 실측 높이 피킹 실행.
+3. **모바일 리모트 컨트롤러 & 그리드 API (`robot_rfid/api_server.py`)**:
+   - `GET /remote`: 갤럭시 모바일 리모트 컨트롤러 UI (WebSocket 실시간 연동 & 햅틱 진동).
+   - `GET /api/v1/mobile/status`: 현재 스캔 모드, 로봇 상태, 배치된 상자, 활성 그리드 셀 조회.
+   - `POST /api/v1/mobile/scan-mode`: `external_reader`(기본) ↔ `phone_nfc`(보조) 전환.
+   - `POST /api/v1/mobile/box-placed`: 1~4번 상자 배치 완료 알림 및 로봇팔 리더기 스캔 출동 트리거.
+   - `POST /api/v1/mobile/nfc-tag`: 보조 모드(`phone_nfc`) 활성화 시에만 갤럭시 뒷면 NFC 태깅 허용.
+   - `POST /api/v1/mobile/control`: `start`, `pause`, `resume`, `home`, `scan_dispatch`, `emergency_stop`, `reset_stop`.
+   - `GET /api/v1/grid/config`, `POST /api/v1/grid/locate`: 15×15 바둑판 그리드 맵 및 셀 좌표/궤적 즉시 계산.
+4. **갤럭시 안드로이드 네이티브 프로젝트 (`galaxy_app/`)**:
+   - `galaxy_app/app/src/main/java/com/visionlab/galaxyremote/MainActivity.kt`: 삼성 갤럭시 NFC 리더(`NfcAdapter`) 및 진동(`Vibrator`) 네이티브 브리지 내장.
+   - `.github/workflows/build-galaxy-apk.yml`: GitHub Actions에서 자동으로 `galaxy-e0509-remote-apk` 빌드 및 아티팩트 업로드.
+
 

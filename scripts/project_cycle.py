@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from vision_picking.legacy.safe_move import DR_BASE, SafeMover  # noqa: E402
+from vision_picking.pick_plane import Calibration, DEFAULT_GRID_COLS, DEFAULT_GRID_ROWS, PickPlane, compute_safe_grasp_z  # noqa: E402
 
 TAGS = {'0B71E55D': ('snack_pepero', 1), '0B71E75D': ('beverage_pet', 2), '0B71E65D': ('canned_meat', 3),
         '0B71ED5D': ('wet_tissue', 4), '0B71EC5D': ('doll', 5)}
@@ -235,6 +236,15 @@ class Cycle:
         log('carry_poses', lift_extra=args.lift_extra, place_extra=args.place_extra,
             carry_z=round(P['home']['posx'][2] + args.lift_extra, 1),
             posj={k: [round(v, 2) for v in val] for k, val in self.carry.items()})
+        cfg_path = Path(getattr(args, 'picking_config', None) or (ROOT / 'config/integration.json'))
+        self.plane = None
+        if cfg_path.is_file():
+            try:
+                cal_data = json.loads(cfg_path.read_text(encoding='utf-8')).get('calibration')
+                if cal_data:
+                    self.plane = PickPlane(Calibration(**cal_data))
+            except Exception as exc:  # noqa: BLE001
+                log('grid_plane_skip', reason=str(exc))
 
     def j(self, name, posj):
         t0 = time.monotonic()
@@ -291,9 +301,31 @@ class Cycle:
             self.log('vision_fallback', requested=product, used=self.args.product)
             product = self.args.product
         item = self.products[product]['real']
-        grasp_z = self.poses['floor']['floor_z'] + item['grasp_height_from_floor']
-        self.log('vision', source='taught product pose (no camera)', product=product)
-        return dict(product=product, pose=[item['x'], item['y'], grasp_z, 0.0, 180.0, item.get('rz', 0.0)])
+        floor_z = self.poses['floor']['floor_z']
+        grasp_info = compute_safe_grasp_z(floor_z, self.z_min, item, measured_height_mm=getattr(self.args, 'measured_height', None))
+        grasp_z = grasp_info['grasp_z_mm']
+        target_x, target_y = item['x'], item['y']
+        grid_info = None
+        if self.plane is not None:
+            rows = getattr(self.args, 'grid_rows', DEFAULT_GRID_ROWS)
+            cols = getattr(self.args, 'grid_cols', DEFAULT_GRID_COLS)
+            try:
+                if getattr(self.args, 'pixel', None):
+                    u_px, v_px = (float(v) for v in self.args.pixel.split(','))
+                    grid_info = self.plane.grid_cell((u_px, v_px), rows=rows, cols=cols)
+                    target_x, target_y = grid_info['exact_base_mm'][0], grid_info['exact_base_mm'][1]
+                elif self.plane.contains_base([target_x, target_y, floor_z]):
+                    grid_info = self.plane.grid_cell_from_base([target_x, target_y, floor_z], rows=rows, cols=cols)
+            except Exception as exc:  # noqa: BLE001
+                self.log('grid_lookup_skip', reason=str(exc))
+        if grid_info is not None:
+            self.log('grid_cell', product=product, cell_id=grid_info['cell_id'], row=grid_info['row'], col=grid_info['col'],
+                     rows=grid_info['rows'], cols=grid_info['cols'], cell_center_mm=grid_info['cell_center_base_mm'],
+                     fine_offset_mm=grid_info['fine_offset_mm'], grasp_z=grasp_z)
+        self.log('vision', source='15x15 grid + taught product pose' if grid_info else 'taught product pose (no camera)',
+                 product=product, grasp_z=grasp_z)
+        return dict(product=product, pose=[target_x, target_y, grasp_z, 0.0, 180.0, item.get('rz', 0.0)],
+                    grid_cell=grid_info, grasp_info=grasp_info)
 
     def approach(self, target):
         up = self.poses['motion']['approach_offset_z']
@@ -302,6 +334,11 @@ class Cycle:
         self._above = [*grasp[:2], grasp[2] + up + self.args.lift_extra, *grasp[3:]]
         self._product = target['product']
         self.grip('gripper_open', 0, lambda p: p <= OPEN_MAX)
+        grid_info = target.get('grid_cell') if isinstance(target, dict) else None
+        if grid_info is not None:
+            cell_xy = grid_info['cell_center_base_mm'][:2]
+            self._grid_approach = [cell_xy[0], cell_xy[1], grasp[2] + up, *grasp[3:]]
+            self.l('grid_coarse_approach', self._grid_approach)
         self.l('approach', self._approach)
         self.l('descend', grasp, self.args.dvel)
 
@@ -444,6 +481,11 @@ def main(argv=None):
                         help='with --api: wait for tasks queued by another PC (POST /api/v1/scan-event) instead of scanning')
     parser.add_argument('--wait-timeout', type=float, default=0, help='remote mode: seconds to wait per task, 0 = forever')
     parser.add_argument('--api', help='run the repo RFID Orchestrator against this web API, e.g. http://127.0.0.1:8000')
+    parser.add_argument('--grid-rows', type=int, default=DEFAULT_GRID_ROWS, help='checkerboard grid rows (default 15)')
+    parser.add_argument('--grid-cols', type=int, default=DEFAULT_GRID_COLS, help='checkerboard grid cols (default 15)')
+    parser.add_argument('--pixel', help='optional detected pixel u,v inside the 4-corner ROI for grid picking')
+    parser.add_argument('--measured-height', type=float, default=None, help='optional RealSense measured object height in mm')
+    parser.add_argument('--picking-config', type=Path, default=None, help='calibration JSON path')
     args = parser.parse_args(argv)
     if args.mode == 'real' and not args.confirm_real:
         parser.error('--mode real requires --confirm-real')
