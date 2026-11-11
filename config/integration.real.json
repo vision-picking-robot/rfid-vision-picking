@@ -161,7 +161,7 @@
     },
     "gripper_max_open_mm": 100.0,
     "max_height_mm": 300.0,
-    "gripper_close_yaw_at_rz0_deg": null,
-    "note": "one product near each calibration corner; set gripper_close_yaw_at_rz0_deg (0 = fingers close along BASE X at rz 0, 90 = along BASE Y) to rotate the grasp to each object"
+    "gripper_close_yaw_at_rz0_deg": 0.0,
+    "note": "one product near each calibration corner. Fingers close along BASE X (robot front-back) at rz 0 (operator-confirmed 2026-11-11), so rz turns them onto each object's short side."
   }
 }

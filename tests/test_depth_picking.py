@@ -15,7 +15,7 @@ ZONES = {'1': 'wet_wipes', '2': 'canned_meat', '3': 'snack_pepero', '4': 'bevera
 def make_cycle(objects, close0=None, revision='rev1'):
     cyc = object.__new__(project_cycle.Cycle)
     cyc.args = SimpleNamespace(depth_api='http://web:8000', product='snack_pepero')
-    cyc.depth_cfg = {'zones': ZONES, 'gripper_max_open_mm': 100.0, 'gripper_close_yaw_at_rz0_deg': close0}
+    cyc.depth_cfg = {'zones': ZONES, 'gripper_max_open_mm': 100.0, 'gripper_close_yaw_at_rz0_deg': close0, 'samples': 1}
     cyc.cal_revision = revision
     cyc.poses = {'floor': {'floor_z': 0.0}}
     cyc.z_min = 10.0
@@ -89,3 +89,16 @@ def test_grasp_yaw_aligns_fingers_with_short_side(web, close0, short_yaw, rz):
 def test_grasp_height_follows_the_measured_object(web, height, grasp):
     cyc = make_cycle([obj(3, (654, 153), height=height)])
     assert run(web, cyc, 'snack_pepero')['pose'][2] == pytest.approx(grasp)
+
+
+def test_unsteady_scene_is_rejected(web, monkeypatch):
+    frames = iter([[obj(2, (674, -37), 53)], [obj(2, (703, -127), 180)], [obj(2, (674, -37), 53)]])
+
+    def fake_get(url, timeout):
+        return httpx.Response(200, json={'objects': next(frames), 'revision': 'rev1'}, request=httpx.Request('GET', url))
+    monkeypatch.setattr(httpx, 'get', fake_get)
+    monkeypatch.setattr(project_cycle.time, 'sleep', lambda s: None)
+    cyc = make_cycle([])
+    cyc.depth_cfg['samples'] = 3
+    with pytest.raises(RuntimeError, match='not steady'):
+        cyc.detect_by_depth('canned_meat')

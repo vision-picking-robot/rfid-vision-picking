@@ -414,14 +414,24 @@ class Cycle:
         zone = next((z for z, name in zones.items() if name == product), None)
         if zone is None:
             raise RuntimeError(f'no depth zone is assigned to {product}')
-        data = httpx.get(f"{self.args.depth_api.rstrip('/')}/api/robot/pick/depth-objects",
-                         timeout=10).raise_for_status().json()
-        if data.get('revision') != self.cal_revision:
-            raise RuntimeError('web calibration revision differs from --picking-config; re-export the calibration')
-        found = [o for o in data['objects'] if o.get('corner') == zone and o.get('inside') and o.get('base')]
-        if not found:
-            raise RuntimeError(f'depth camera sees no object in zone {zone} ({product})')
-        obj = found[0]  # largest blob in the zone
+        url = f"{self.args.depth_api.rstrip('/')}/api/robot/pick/depth-objects"
+        samples = []
+        for i in range(int(self.depth_cfg.get('samples', 3))):
+            if i:
+                time.sleep(0.3)
+            data = httpx.get(url, timeout=10).raise_for_status().json()
+            if data.get('revision') != self.cal_revision:
+                raise RuntimeError('web calibration revision differs from --picking-config; re-export the calibration')
+            found = [o for o in data['objects'] if o.get('corner') == zone and o.get('inside') and o.get('base')]
+            if not found:
+                raise RuntimeError(f'depth camera sees no object in zone {zone} ({product})')
+            samples.append(found[0])  # largest blob in the zone
+        # A hand or arm over the table shows up as a tall "object": only act on a still scene.
+        tol = float(self.depth_cfg.get('stable_tol_mm', 10.0))
+        obj = samples[-1]
+        if any(math.dist(s['base'], obj['base']) > tol or abs(s['height_mm'] - obj['height_mm']) > tol for s in samples):
+            raise RuntimeError(f'zone {zone} is not steady across {len(samples)} depth frames '
+                               '(person or moving object over the table?)')
         short_mm = (obj.get('footprint_mm') or [0.0])[0]
         max_open = float(self.depth_cfg.get('gripper_max_open_mm', 100.0))
         if short_mm > max_open:
