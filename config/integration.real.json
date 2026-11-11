@@ -1,0 +1,155 @@
+{
+  "mock_mode": false,
+  "namespace": "dsr01",
+  "robot_ip": "110.120.1.56",
+  "robot_port": 12345,
+  "calibration_verified": true,
+  "tcp_verified": false,
+  "waypoints_verified": false,
+  "gripper_verified": false,
+  "workspace_verified": false,
+  "calibration": {
+    "camera": {
+      "session_id": "760b74708a334bd099f38ca61369fd2d",
+      "camera_generation": 1,
+      "camera_id": "/dev/video4",
+      "width": 640,
+      "height": 480
+    },
+    "revision": "40cac27bdb404daf9e9e4326d93f4944",
+    "corners": [
+      {
+        "pixel": [
+          407.0,
+          99.0
+        ],
+        "pose": [
+          423.9,
+          -169.1,
+          0.0,
+          0.0,
+          180.0,
+          0.0
+        ]
+      },
+      {
+        "pixel": [
+          268.0,
+          101.0
+        ],
+        "pose": [
+          720.8,
+          -166.1,
+          0.0,
+          0.0,
+          180.0,
+          0.0
+        ]
+      },
+      {
+        "pixel": [
+          275.0,
+          300.0
+        ],
+        "pose": [
+          714.1,
+          294.1,
+          0.0,
+          0.0,
+          180.0,
+          0.0
+        ]
+      },
+      {
+        "pixel": [
+          404.0,
+          295.0
+        ],
+        "pose": [
+          418.5,
+          304.6,
+          0.0,
+          0.0,
+          180.0,
+          0.0
+        ]
+      }
+    ],
+    "clearance_per_side_mm": 5.0,
+    "region": "legacy"
+  },
+  "min_confidence": 0.6,
+  "workspace_mm": {
+    "min": [
+      -650.0,
+      -650.0,
+      10.0
+    ],
+    "max": [
+      650.0,
+      650.0,
+      600.0
+    ]
+  },
+  "class_map": {
+    "snack_box": "snack_box",
+    "snack_pepero": "snack_pepero",
+    "beverage_pet": "beverage_pet",
+    "pet_bottle": "pet_bottle",
+    "can": "can",
+    "canned_meat": "canned_meat",
+    "wet_tissue": "wet_tissue",
+    "wet_wipes": "wet_wipes"
+  },
+  "grasp_feedback": {
+    "snack_box": {
+      "calibrated": false,
+      "min_position_pulses": 100,
+      "max_position_pulses": 600,
+      "min_current": 100
+    },
+    "snack_pepero": {
+      "calibrated": false,
+      "min_position_pulses": 100,
+      "max_position_pulses": 600,
+      "min_current": 100
+    },
+    "beverage_pet": {
+      "calibrated": false,
+      "min_position_pulses": 100,
+      "max_position_pulses": 600,
+      "min_current": 100
+    },
+    "pet_bottle": {
+      "calibrated": false,
+      "min_position_pulses": 100,
+      "max_position_pulses": 600,
+      "min_current": 100
+    },
+    "can": {
+      "calibrated": false,
+      "min_position_pulses": 100,
+      "max_position_pulses": 600,
+      "min_current": 100
+    },
+    "canned_meat": {
+      "calibrated": false,
+      "min_position_pulses": 100,
+      "max_position_pulses": 600,
+      "min_current": 100
+    },
+    "wet_tissue": {
+      "calibrated": false,
+      "min_position_pulses": 100,
+      "max_position_pulses": 600,
+      "min_current": 100
+    },
+    "wet_wipes": {
+      "calibrated": false,
+      "min_position_pulses": 100,
+      "max_position_pulses": 600,
+      "min_current": 100
+    }
+  },
+  "calibration_note": "2026-11-11 work area: 4 corners hand-taught (fingertip = flange + 120 mm), pixels = centers of paper labels 1-4 in RealSense D455f color 640x480. Check point 5: pixel (338,206) -> base (573.8, 74.8); robot hovered exactly above the label (operator confirmed). Used only via project_cycle --picking-config."
+}
