@@ -17,6 +17,7 @@ import json
 import math
 import signal
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -129,6 +130,9 @@ class MockRaw:
     def stop(self):
         pass
 
+    def emergency_stop(self):
+        self.estopped = True
+
     def close(self):
         pass
 
@@ -141,6 +145,17 @@ class RealRaw:
         from vision_picking.drl_gripper import DrlGripper
         self.ros = RosBackend(namespace)
         self.hand = DrlGripper(self.ros.node, self.ros.executor, namespace)
+        import rclpy
+        from dsr_msgs2.srv import MoveStop
+        from rclpy.context import Context
+        from rclpy.executors import SingleThreadedExecutor
+        from rclpy.node import Node
+        self._estop_ctx = Context()
+        rclpy.init(context=self._estop_ctx)
+        self._estop_node = Node('project_cycle_estop', context=self._estop_ctx)
+        self._estop_exec = SingleThreadedExecutor(context=self._estop_ctx)
+        self._estop_exec.add_node(self._estop_node)
+        self._estop_client = self._estop_node.create_client(MoveStop, f'/{namespace}/motion/move_stop')
         self.scan_timeout = 5.0
 
     def check_ready(self):
@@ -190,8 +205,17 @@ class RealRaw:
     def stop(self):
         self.ros.stop()
 
+    def emergency_stop(self):
+        """move_stop on a dedicated context: the main executor is blocked inside the running motion call."""
+        from dsr_msgs2.srv import MoveStop
+        from vision_picking.legacy.ros_calls import call_service
+        result = call_service(self._estop_exec, self._estop_client, MoveStop.Request(stop_mode=1), 3)
+        if not result.success:
+            raise RuntimeError('move_stop not acknowledged')
+
     def close(self):
         self.ros.close()
+        self._estop_ctx.shutdown()
 
 
 def load_config(product):
@@ -203,9 +227,72 @@ def load_config(product):
     return poses, products
 
 
+def verified_real_calibration(cfg):
+    cal = cfg.get('calibration') or {}
+    revision = str(cal.get('revision') or '').lower()
+    camera = str((cal.get('camera') or {}).get('camera_id') or '').lower()
+    return (cfg.get('calibration_verified') is True and cfg.get('mock_mode') is False
+            and 'mock' not in revision and 'mock' not in camera and len(cal.get('corners') or []) == 4)
+
+
+class MobileEStopWatch(threading.Thread):
+    """Polls the dashboard's mobile E-stop flag and sends move_stop the moment it is set.
+
+    The phone button only flips a flag in the web process; this thread is what turns it into a
+    real robot stop. It is not a substitute for the pendant E-Stop.
+    """
+
+    def __init__(self, api, stop_fn, log, period=0.3):
+        super().__init__(daemon=True)
+        self.url = api.rstrip('/') + '/api/v1/mobile/status'
+        self.stop_fn, self.log, self.period = stop_fn, log, period
+        self.tripped = threading.Event()
+        self.alive = threading.Event()
+        self.alive.set()
+        self.available = True
+
+    def poll(self):
+        import httpx
+        r = httpx.get(self.url, timeout=2)
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        return bool(r.json().get('emergency_stopped'))
+
+    def run(self):
+        warned = False
+        while self.alive.is_set() and not self.tripped.is_set():
+            try:
+                state = self.poll()
+                if state is None:
+                    self.available = False
+                    self.log('estop_watch_unavailable', url=self.url)
+                    return
+                warned = False
+                if state:
+                    self.tripped.set()
+                    self.log('mobile_emergency_stop', action='move_stop')
+                    try:
+                        self.stop_fn()
+                        self.log('move_stop_sent', source='mobile_estop')
+                    except Exception as error:  # noqa: BLE001
+                        self.log('move_stop_failed', source='mobile_estop', message=str(error))
+                    return
+            except Exception as error:  # noqa: BLE001
+                if not warned:
+                    self.log('estop_watch_unreachable', message=str(error))
+                    warned = True
+            time.sleep(self.period)
+
+    def check(self):
+        if self.tripped.is_set():
+            raise RuntimeError('Mobile emergency stop pressed: motion stopped (reset_stop on the phone before restarting)')
+
+
 class Cycle:
     def __init__(self, raw, poses, products, args, log):
         self.raw, self.poses, self.products, self.args, self.log = raw, poses, products, args, log
+        self.estop = None
         floor = poses['floor']
         self.z_min = floor['floor_z'] + floor['safety_margin'] + floor['nfc_protrusion']
         home = poses['poses']['home']
@@ -240,15 +327,29 @@ class Cycle:
         self.plane = None
         if cfg_path.is_file():
             try:
-                cal_data = json.loads(cfg_path.read_text(encoding='utf-8')).get('calibration')
+                cfg = json.loads(cfg_path.read_text(encoding='utf-8'))
+                cal_data = cfg.get('calibration')
+                if cal_data and args.mode == 'real' and not verified_real_calibration(cfg):
+                    # Never steer the physical arm with MOCK/unverified camera calibration.
+                    log('grid_disabled', config=str(cfg_path), revision=cal_data.get('revision'),
+                        reason='real mode needs calibration_verified=true and a non-mock calibration')
+                    cal_data = None
                 if cal_data:
                     self.plane = PickPlane(Calibration(**cal_data))
             except Exception as exc:  # noqa: BLE001
                 log('grid_plane_skip', reason=str(exc))
+        if args.mode == 'real' and getattr(args, 'pixel', None) and self.plane is None:
+            raise RuntimeError('--pixel needs a verified real camera calibration (--picking-config with calibration_verified=true)')
+
+    def _estop_check(self):
+        if self.estop is not None:
+            self.estop.check()
 
     def j(self, name, posj):
+        self._estop_check()
         t0 = time.monotonic()
         self.mover.movej(posj, self.args.jvel, self.args.jvel)
+        self._estop_check()
         cur = self.raw.get_current_posj()
         err = max(abs(a - b) for a, b in zip(cur, posj))
         if err > JOINT_TOL:
@@ -256,8 +357,10 @@ class Cycle:
         self.log('step', name=name, kind='movej', seconds=round(time.monotonic() - t0, 1))
 
     def l(self, name, pose, vel=None):
+        self._estop_check()
         t0 = time.monotonic()
         self.mover.movel(pose, vel or self.args.lvel, vel or self.args.lvel, DR_BASE)
+        self._estop_check()
         cur = FlangeOffset(self.raw, self.offset).get_current_posx(DR_BASE)
         err = max(abs(a - b) for a, b in zip(cur[:3], pose[:3]))
         if err > POS_TOL:
@@ -266,6 +369,7 @@ class Cycle:
                  seconds=round(time.monotonic() - t0, 1))
 
     def grip(self, name, target, ok):
+        self._estop_check()
         fb = self.raw.grip(target)
         if fb['code'] != 1 or fb['moving'] or not ok(fb['position_pulses']):
             raise RuntimeError(f"{name}: gripper not confirmed ({fb['result']}, pos={fb['position_pulses']})")
@@ -424,6 +528,7 @@ def run_remote_task(runner, args, log, cycle):
         task = api.get('/api/v1/current-task').raise_for_status().json()['task']
         if task is not None:
             break
+        runner._estop_check()
         if args.wait_timeout and time.monotonic() - started > args.wait_timeout:
             raise TimeoutError(f'No remote RFID task within {args.wait_timeout:.0f}s')
         time.sleep(0.5)
@@ -505,6 +610,18 @@ def main(argv=None):
     cycle, code = 0, 0
     try:
         runner = Cycle(raw, poses, products, args, log)
+        if args.api:
+            watch = MobileEStopWatch(args.api, raw.emergency_stop, log)
+            try:
+                if watch.poll():
+                    raise RuntimeError('Mobile emergency stop is active; press reset_stop on the phone first')
+            except RuntimeError:
+                raise
+            except Exception as error:  # noqa: BLE001
+                log('estop_watch_unreachable', message=str(error))
+            watch.start()
+            runner.estop = watch
+            log('estop_watch', url=watch.url, note='phone E-stop -> move_stop; pendant E-Stop is still the real safety stop')
         while args.cycles == 0 or cycle < args.cycles:
             cycle += 1
             if args.api and args.remote_rfid:

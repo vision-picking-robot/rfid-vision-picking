@@ -510,6 +510,7 @@ MOBILE_REMOTE_HTML = """<!DOCTYPE html>
     color: var(--btn-secondary-text);
     border: 1px solid var(--btn-secondary-border);
   }
+  .estop-note { margin: 10px 2px 0; font-size: 12px; line-height: 1.5; opacity: .75; }
   .ctrl-estop {
     grid-column: span 2;
     background: var(--btn-outline-navy-bg);
@@ -705,7 +706,7 @@ MOBILE_REMOTE_HTML = """<!DOCTYPE html>
       <button type="button" class="ctrl-btn ctrl-sky" onclick="sendControl('pause')">
         일시정지
       </button>
-      <button type="button" class="ctrl-btn ctrl-secondary" onclick="sendControl('dispatch_scan')">
+      <button type="button" class="ctrl-btn ctrl-secondary" onclick="sendControl('scan_dispatch')">
         리더기 스캔 출동
       </button>
       <button type="button" class="ctrl-btn ctrl-secondary" onclick="sendControl('home')">
@@ -715,6 +716,8 @@ MOBILE_REMOTE_HTML = """<!DOCTYPE html>
         비상 정지 (EMERGENCY STOP)
       </button>
     </div>
+    <p class="estop-note">로봇 PC의 사이클이 이 버튼을 감지하면 move_stop을 보냅니다. 통신이 끊기면 동작하지 않으므로
+      펜던트 E-Stop을 대신하지 않습니다.</p>
   </section>
 </main>
 
@@ -853,7 +856,7 @@ MOBILE_REMOTE_HTML = """<!DOCTYPE html>
       const res = await fetch('/api/v1/mobile/box-placed', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({box_slot: slot, uid, quantity: 1, dispatch_scan: true})
+        body: JSON.stringify({box_slot: slot, uid, quantity: 1})
       });
       const data = await res.json();
       if (res.ok) {
