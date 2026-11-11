@@ -129,24 +129,25 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
     }
 
     private fun loadOfflineGuidePage(host: String) {
+        val style = """
+              body { background:#F8FAFC; color:#0F172A; font-family:sans-serif; padding:20px; text-align:center; }
+              .card { background:#FFFFFF; border:1px solid #E2E8F0; border-radius:16px; padding:22px; margin-top:20px; }
+              h2 { color:#0F172A; font-size:1.05rem; margin-bottom:10px; }
+              p { color:#475569; font-size:0.88rem; line-height:1.5; margin-bottom:12px; }
+              code { display:block; background:#0F172A; padding:10px; border-radius:8px; color:#38BDF8; margin:10px 0; font-size:0.82rem; }
+            """.trimIndent()
         val html = """
             <!DOCTYPE html>
             <html lang="ko">
             <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-            <style>
-              body { background:#0b1120; color:#f8fafc; font-family:sans-serif; padding:20px; text-align:center; }
-              .card { background:#162032; border:1px solid #28354a; border-radius:14px; padding:20px; margin-top:20px; }
-              h2 { color:#38bdf8; font-size:1.1rem; margin-bottom:10px; }
-              p { color:#94a3b8; font-size:0.88rem; line-height:1.5; margin-bottom:12px; }
-              code { display:block; background:#090d16; padding:10px; border-radius:8px; color:#22c55e; margin:10px 0; font-size:0.82rem; }
-            </style></head>
+            <style>$style</style></head>
             <body>
               <div class="card">
-                <h2>🤖 로봇 PC 서버($host) 대기 중</h2>
-                <p>1. 갤럭시 폰과 로봇 노트북을 <b>같은 Wi-Fi</b>에 연결하세요.</p>
+                <h2>로봇 PC 서버($host) 연결 대기 중</h2>
+                <p>1. 갤럭시 디바이스와 로봇 노트북을 동일한 Wi-Fi에 연결하세요.</p>
                 <p>2. 로봇 노트북에서 아래 명령으로 서버를 실행하세요:</p>
                 <code>python scripts/start_lab.py --host 0.0.0.0</code>
-                <p>3. 상단 입력창에 로봇 노트북의 Wi-Fi IP(예: <code>192.168.0.x:8000</code>)를 입력하고 <b>[서버 연결]</b>을 누르세요.</p>
+                <p>3. 상단 입력창에 로봇 노트북의 Wi-Fi IP(예: 192.168.0.x:8000)를 입력하고 [서버 연결]을 누르세요.</p>
               </div>
             </body></html>
         """.trimIndent()
