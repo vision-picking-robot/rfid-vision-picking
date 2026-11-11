@@ -449,6 +449,44 @@ async def calibration(request: Request,region:Literal["legacy","floor","shelf"]=
     return request.app.state.robot.picks.calibration(CameraFrame.from_packet(packet),region)
 
 
+@router.get("/depth-objects")
+async def depth_objects(request: Request, min_height_mm: float = 15.0):
+    """Objects standing on the table (RealSense depth), mapped to robot BASE with the work-area calibration.
+
+    `corner` is the nearest calibration corner (1-4) in BASE X/Y; the robot side maps corners to
+    products (one product is placed near each corner).
+    """
+    from .depth_locator import find_objects
+
+    runtime = request.app.state.pipeline
+    camera = CameraFrame.from_packet(await asyncio.to_thread(runtime.pick_frame))
+    calibration = request.app.state.robot.picks.calibration(camera)
+    if not calibration["revision"]:
+        raise DomainError("먼저 이 카메라와 해상도의 작업 평면을 보정하세요.")
+    plane = PickPlane(Calibration(**calibration))
+    sensors = runtime.latest_sensors()
+    try:
+        found = await asyncio.to_thread(find_objects, sensors.depth, sensors.intrinsics, plane.pixels, min_height_mm)
+    except ValueError as exc:
+        raise DomainError(f"깊이 영상에서 작업 영역을 찾지 못했습니다: {exc}", 422) from exc
+    corners = [c["pose"][:2] for c in calibration["corners"]]
+    for obj in found["objects"]:
+        base = plane.project(obj["pixel"])
+        obj["base"] = None if base is None else [round(float(v), 1) for v in base[:2]]
+        obj["inside"] = bool(plane.contains(obj["pixel"]))
+        if base is not None:
+            obj["corner"] = 1 + min(range(4), key=lambda i: math.dist(base[:2], corners[i]))
+        rect = [plane.project(p) for p in obj.pop("footprint_px")]
+        if all(p is not None for p in rect):
+            a, b, c = (r[:2] for r in rect[:3])
+            sides = [(math.dist(a, b), b, a), (math.dist(b, c), c, b)]
+            (short, s1, s0), (long_, _, _) = sorted(sides, key=lambda s: s[0])
+            # Yaw (deg, BASE) of the short side: the direction the fingers should close along.
+            obj["footprint_mm"] = [round(short, 1), round(long_, 1)]
+            obj["short_axis_yaw_deg"] = round(math.degrees(math.atan2(s1[1] - s0[1], s1[0] - s0[0])) % 180.0, 1)
+    return {**found, "revision": calibration["revision"], "camera": camera.model_dump()}
+
+
 @router.put("/calibration", dependencies=[Depends(local_json)])
 async def save_calibration(body: Calibration, request: Request):
     packet = await asyncio.to_thread(frame_reader(request))

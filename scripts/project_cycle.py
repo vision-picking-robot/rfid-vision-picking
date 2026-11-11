@@ -327,9 +327,12 @@ class Cycle:
             posj={k: [round(v, 2) for v in val] for k, val in self.carry.items()})
         cfg_path = Path(getattr(args, 'picking_config', None) or (ROOT / 'config/integration.json'))
         self.plane = None
+        self.cal_revision = None
+        self.depth_cfg = {}
         if cfg_path.is_file():
             try:
                 cfg = json.loads(cfg_path.read_text(encoding='utf-8'))
+                self.depth_cfg = cfg.get('depth_picking') or {}
                 cal_data = cfg.get('calibration')
                 if cal_data and args.mode == 'real' and not verified_real_calibration(cfg):
                     # Never steer the physical arm with MOCK/unverified camera calibration.
@@ -338,8 +341,11 @@ class Cycle:
                     cal_data = None
                 if cal_data:
                     self.plane = PickPlane(Calibration(**cal_data))
+                    self.cal_revision = cal_data.get('revision')
             except Exception as exc:  # noqa: BLE001
                 log('grid_plane_skip', reason=str(exc))
+        if getattr(args, 'depth_api', None) and (self.plane is None or not self.depth_cfg.get('zones')):
+            raise RuntimeError('--depth-api needs --picking-config with a verified calibration and depth_picking.zones')
         if args.mode == 'real' and getattr(args, 'pixel', None) and self.plane is None:
             raise RuntimeError('--pixel needs a verified real camera calibration (--picking-config with calibration_verified=true)')
 
@@ -401,8 +407,52 @@ class Cycle:
         self.j('home_after_scan', P['home']['posj'])
         return uid
 
+    def detect_by_depth(self, product):
+        """Locate `product` with the depth camera: the object in its corner zone of the work area."""
+        import httpx
+        zones = {int(k): v for k, v in self.depth_cfg['zones'].items()}
+        zone = next((z for z, name in zones.items() if name == product), None)
+        if zone is None:
+            raise RuntimeError(f'no depth zone is assigned to {product}')
+        data = httpx.get(f"{self.args.depth_api.rstrip('/')}/api/robot/pick/depth-objects",
+                         timeout=10).raise_for_status().json()
+        if data.get('revision') != self.cal_revision:
+            raise RuntimeError('web calibration revision differs from --picking-config; re-export the calibration')
+        found = [o for o in data['objects'] if o.get('corner') == zone and o.get('inside') and o.get('base')]
+        if not found:
+            raise RuntimeError(f'depth camera sees no object in zone {zone} ({product})')
+        obj = found[0]  # largest blob in the zone
+        short_mm = (obj.get('footprint_mm') or [0.0])[0]
+        max_open = float(self.depth_cfg.get('gripper_max_open_mm', 100.0))
+        if short_mm > max_open:
+            raise RuntimeError(f'{product} is {short_mm:.0f} mm wide (gripper opens {max_open:.0f} mm); '
+                               'place it so its short side fits the gripper')
+        if not 5.0 <= obj['height_mm'] <= float(self.depth_cfg.get('max_height_mm', 300.0)):
+            raise RuntimeError(f"implausible object height {obj['height_mm']} mm in zone {zone}")
+        item = (self.products.get(product) or self.products[self.args.product])['real']
+        # The nominal (taught) height sets a 50 % floor in compute_safe_grasp_z, which would put the
+        # fingers above a lower measured object; with a measurement, only keep the 15 mm table margin.
+        measured_item = dict(item, grasp_height_from_floor=obj['height_mm'], min_safe_height_from_floor=15.0)
+        grasp_info = compute_safe_grasp_z(self.poses['floor']['floor_z'], self.z_min, measured_item,
+                                          measured_height_mm=obj['height_mm'])
+        if grasp_info['grasp_z_mm'] >= self.poses['floor']['floor_z'] + obj['height_mm']:
+            raise RuntimeError(f"grasp height {grasp_info['grasp_z_mm']} mm is not below the object top")
+        close0 = self.depth_cfg.get('gripper_close_yaw_at_rz0_deg')
+        if close0 is None or obj.get('short_axis_yaw_deg') is None:
+            rz = item.get('rz', 0.0)
+        else:  # fingers close along base yaw (close0 - rz) for tool orientation (0, 180, rz)
+            rz = (float(close0) - obj['short_axis_yaw_deg'] + 90.0) % 180.0 - 90.0
+        x, y = obj['base']
+        self.log('vision', source=f'depth camera zone {zone}', product=product, base=[x, y],
+                 height_mm=obj['height_mm'], footprint_mm=obj.get('footprint_mm'),
+                 short_axis_yaw=obj.get('short_axis_yaw_deg'), rz=round(rz, 1), grasp_z=grasp_info['grasp_z_mm'])
+        return dict(product=product, pose=[x, y, grasp_info['grasp_z_mm'], 0.0, 180.0, rz],
+                    grid_cell=None, grasp_info=grasp_info)
+
     def detect(self, task):
         product = task.get('yolo_class_name') if isinstance(task, dict) else task
+        if getattr(self.args, 'depth_api', None):
+            return self.detect_by_depth(product)
         if product not in self.products or not self.products[product]['real'].get('taught'):
             self.log('vision_fallback', requested=product, used=self.args.product)
             product = self.args.product
@@ -587,6 +637,8 @@ def main(argv=None):
                         help='mm added to the lift and carry height (home/via/box transfer)')
     parser.add_argument('--place-extra', type=float, default=100.0,
                         help='mm above the taught box slot z where the object is released')
+    parser.add_argument('--depth-api', help='locate products with the RealSense depth camera via this web, '
+                        'e.g. http://127.0.0.1:8000 (needs --picking-config with depth_picking.zones)')
     parser.add_argument('--grip-current', type=int, default=150,
                         help='gripper goal current in mA for the grasp (force limit; was 400, which crushed snack boxes)')
     parser.add_argument('--require-object', action='store_true', help='fail when the gripper closes empty')

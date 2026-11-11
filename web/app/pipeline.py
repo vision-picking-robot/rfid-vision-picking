@@ -269,6 +269,16 @@ class Pipeline:
         with self.lock:
             return self.jpeg
 
+    def latest_sensors(self):
+        """Newest RealSense frame (depth in metres + intrinsics) of the current camera session."""
+        with self.lock:
+            packet = self.preview_packet
+            stale = packet is None or time.monotonic_ns() - packet.captured_ns > self.settings.stale_seconds * 1e9
+            if (stale or packet.generation != self.generation or packet.sensors is None
+                    or packet.sensors.depth is None or not packet.sensors.intrinsics):
+                raise DomainError("깊이 영상을 받을 수 없습니다. RealSense를 입력 카메라로 선택하고 켜세요.", 503)
+            return packet.sensors
+
     def latest_preview(self, mode="detections", previous=None):
         """Return detections and the shared encoded JPEG from the same camera frame."""
         with self.lock:

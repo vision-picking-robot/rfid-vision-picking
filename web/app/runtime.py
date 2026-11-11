@@ -166,6 +166,12 @@ class Runtime:
                 raise DomainError("카메라가 탐지 중일 때 사용할 수 있습니다.", 503)
             return self.pipeline.pick_frame(session_id, frame_id)
 
+    def latest_sensors(self):
+        with self.lock:
+            if self.busy or not self.pipeline or not self.camera_desired or self.stop_event.is_set():
+                raise DomainError("카메라가 탐지 중일 때 사용할 수 있습니다.", 503)
+            return self.pipeline.latest_sensors()
+
     def latest_jpeg(self):
         pipeline = self.pipeline
         return pipeline.latest_jpeg() if pipeline and not self.busy and self.camera_desired else None

@@ -151,5 +151,17 @@
       "min_current": 100
     }
   },
-  "calibration_note": "2026-11-11 work area: 4 corners hand-taught (fingertip = flange + 120 mm), pixels = centers of paper labels 1-4 in RealSense D455f color 640x480. Check point 5: pixel (338,206) -> base (573.8, 74.8); robot hovered exactly above the label (operator confirmed). Used only via project_cycle --picking-config."
+  "calibration_note": "2026-11-11 work area: 4 corners hand-taught (fingertip = flange + 120 mm), pixels = centers of paper labels 1-4 in RealSense D455f color 640x480. Check point 5: pixel (338,206) -> base (573.8, 74.8); robot hovered exactly above the label (operator confirmed). Used only via project_cycle --picking-config.",
+  "depth_picking": {
+    "zones": {
+      "1": "wet_wipes",
+      "2": "canned_meat",
+      "3": "snack_pepero",
+      "4": "beverage_pet"
+    },
+    "gripper_max_open_mm": 100.0,
+    "max_height_mm": 300.0,
+    "gripper_close_yaw_at_rz0_deg": null,
+    "note": "one product near each calibration corner; set gripper_close_yaw_at_rz0_deg (0 = fingers close along BASE X at rz 0, 90 = along BASE Y) to rotate the grasp to each object"
+  }
 }
