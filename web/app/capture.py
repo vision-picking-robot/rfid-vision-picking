@@ -12,7 +12,10 @@ def camera_devices():
         for path in sorted(Path('/sys/class/video4linux').glob('video*')):
             index = int(path.name.removeprefix('video'))
             name = (path / 'name').read_text().strip() if (path / 'name').exists() else path.name
-            devices.append(dict(id=str(Path('/dev') / path.name), index=index, name=name))
+            # One physical camera exposes several nodes (a D455f has six); the USB device path
+            # (parent of the interface) groups them.
+            usb = str((path / 'device').resolve().parent) if (path / 'device').exists() else None
+            devices.append(dict(id=str(Path('/dev') / path.name), index=index, name=name, usb=usb))
     if not devices:
         index = int(os.getenv('YOLO_CAMERA_INDEX', '0'))
         devices = [dict(id=f'cam-{index}', index=index, name=f'Camera {index}')]
@@ -39,7 +42,7 @@ def open_camera(settings):
     note = None
     if selected and selected in real_devices:
         from .realsense import RealSenseCamera
-        if len(real_devices) == 1:
+        if len({d.get("usb") or d["id"] for d in real_devices}) == 1:
             try:
                 camera = RealSenseCamera(selected["index"])
                 camera.device_id = selected["id"]

@@ -298,3 +298,21 @@ def test_child_progress_starts_correct_stage_and_only_persists_changes(runtime,m
     assert update.call_count==1
     saved=runtime.store.get("job",job["id"])
     assert saved["state"]=="exporting" and "epoch" not in saved["progress"]
+
+
+def test_one_realsense_with_several_v4l_nodes_opens_depth(monkeypatch):
+    from app import capture
+    usb = "/sys/devices/pci0000:00/usb3/3-1/3-1.4"
+    devices = [{"id": "/dev/video0", "index": 0, "name": "1080p FHD Camera", "usb": "/sys/devices/x/3-1.2"}] + [
+        {"id": f"/dev/video{i}", "index": i, "name": "Intel(R) RealSense(TM) Depth Ca", "usb": usb} for i in range(4, 10)]
+    monkeypatch.setattr(capture, "camera_devices", lambda: devices)
+    opened = []
+
+    class FakeRealSense:
+        def __init__(self, index):
+            opened.append(index)
+
+    import app.realsense
+    monkeypatch.setattr(app.realsense, "RealSenseCamera", FakeRealSense)
+    camera = capture.open_camera(settings(camera_id="/dev/video4"))
+    assert isinstance(camera, FakeRealSense) and opened == [4]
