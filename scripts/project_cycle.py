@@ -35,6 +35,15 @@ TAGS = {'0B71E55D': ('snack_pepero', 1), '0B71E75D': ('beverage_pet', 2), '0B71E
 OPEN_MAX = 10
 JOINT_TOL = 1.0
 POS_TOL = 2.0
+# In-air waypoints (approach above / lift out of the grasp) near the far, stretched edge of the work
+# area end a few mm off: the controller bends the line near the elbow singularity (seen: 3 mm at
+# x 680, J3 15 deg, re-commanding the same pose does not converge). The grasp itself keeps POS_TOL.
+WAYPOINT_TOL = 10.0
+# Elbow (J3) angle below which a pose is treated as out of comfortable reach. The controller's IK
+# clamps J3 to exactly 0 for unreachable poses and reports success; movel then does not move
+# (alarm 1206 "NOT REACHABLE") or ends short near the singularity.
+ELBOW_MIN_DEG = 20.0
+REACH_STEP_MM = 10.0
 
 
 class Logger:
@@ -196,6 +205,20 @@ class RealRaw:
         if not (sol.success and res.success):
             raise RuntimeError(f'ikin failed for raised pose of {posj}')
         return list(res.conv_posj)
+
+    def elbow_deg(self, flange_pose):
+        """IK elbow angle (J3, deg) for a flange pose in the current solution space; None if IK fails."""
+        from dsr_msgs2.srv import GetSolutionSpace, Ikin
+        from vision_picking.legacy.ros_calls import call_service
+        node, ex = self.ros.node, self.ros.executor
+        if not hasattr(self, '_ik'):
+            self._ik = node.create_client(Ikin, '/dsr01/motion/ikin')
+            self._sol = node.create_client(GetSolutionSpace, '/dsr01/aux_control/get_solution_space')
+        posj = self.get_current_posj()
+        sol = call_service(ex, self._sol, GetSolutionSpace.Request(pos=[float(v) for v in posj]), 3.0)
+        res = call_service(ex, self._ik, Ikin.Request(pos=[float(v) for v in flange_pose],
+                                                      sol_space=sol.sol_space, ref=0), 3.0)
+        return float(res.conv_posj[2]) if (sol.success and res.success) else None
 
     def scan(self):
         try:
@@ -364,15 +387,17 @@ class Cycle:
             raise RuntimeError(f'{name}: joint arrival error {err:.2f} deg')
         self.log('step', name=name, kind='movej', seconds=round(time.monotonic() - t0, 1))
 
-    def l(self, name, pose, vel=None):
+    def l(self, name, pose, vel=None, tol=POS_TOL):
         self._estop_check()
         t0 = time.monotonic()
         self.mover.movel(pose, vel or self.args.lvel, vel or self.args.lvel, DR_BASE)
         self._estop_check()
         cur = FlangeOffset(self.raw, self.offset).get_current_posx(DR_BASE)
         err = max(abs(a - b) for a, b in zip(cur[:3], pose[:3]))
-        if err > POS_TOL:
+        if err > tol:
             raise RuntimeError(f'{name}: TCP arrival error {err:.1f} mm')
+        if err > POS_TOL:
+            self.log('arrival_offset', name=name, error_mm=round(err, 1), tolerance_mm=tol)
         self.log('step', name=name, kind='movel', tcp=[round(v, 1) for v in cur[:3]],
                  seconds=round(time.monotonic() - t0, 1))
 
@@ -499,19 +524,42 @@ class Cycle:
         return dict(product=product, pose=[target_x, target_y, grasp_z, 0.0, 180.0, item.get('rz', 0.0)],
                     grid_cell=grid_info, grasp_info=grasp_info)
 
+    def reach_z(self, name, pose, want_z, min_z):
+        """Highest fingertip z <= want_z (10 mm steps, >= min_z) the arm reaches with elbow >= ELBOW_MIN_DEG."""
+        elbow_deg = getattr(self.raw, 'elbow_deg', None)
+        if elbow_deg is None:  # mock robot: no kinematic limit model
+            return want_z
+        z = want_z
+        while z >= min_z - 1e-6:
+            elbow = elbow_deg([pose[0], pose[1], z + self.offset, *pose[3:6]])
+            if elbow is not None and abs(elbow) >= ELBOW_MIN_DEG:
+                if z < want_z:
+                    self.log('reach_limited', name=name, wanted_z=round(want_z, 1), z=round(z, 1), elbow_deg=round(elbow, 1))
+                return z
+            z -= REACH_STEP_MM
+        raise RuntimeError(f'{name}: x {pose[0]:.0f} y {pose[1]:.0f} is too far to stay {min_z:.0f} mm high '
+                           '(elbow near full stretch); move the object closer to the robot')
+
     def approach(self, target):
         up = self.poses['motion']['approach_offset_z']
         grasp = target['pose']
-        self._approach = [*grasp[:2], grasp[2] + up, *grasp[3:]]
-        self._above = [*grasp[:2], grasp[2] + up + self.args.lift_extra, *grasp[3:]]
+        info = target.get('grasp_info') or {}
+        floor_z = self.poses['floor']['floor_z']
+        height = info.get('measured_height_mm') or info.get('nominal_height_mm')
+        # Fingers must clear the object top on the way down, and lift it at least as high.
+        min_z = floor_z + height + 20.0 if height else grasp[2] + 40.0
+        approach_z = self.reach_z('approach', grasp, grasp[2] + up, min_z)
+        above_z = self.reach_z('lift', grasp, grasp[2] + up + self.args.lift_extra, approach_z)
+        self._approach = [*grasp[:2], approach_z, *grasp[3:]]
+        self._above = [*grasp[:2], above_z, *grasp[3:]]
         self._product = target['product']
         self.grip('gripper_open', 0, lambda p: p <= OPEN_MAX)
         grid_info = target.get('grid_cell') if isinstance(target, dict) else None
         if grid_info is not None:
             cell_xy = grid_info['cell_center_base_mm'][:2]
-            self._grid_approach = [cell_xy[0], cell_xy[1], grasp[2] + up, *grasp[3:]]
-            self.l('grid_coarse_approach', self._grid_approach)
-        self.l('approach', self._approach)
+            self._grid_approach = [cell_xy[0], cell_xy[1], approach_z, *grasp[3:]]
+            self.l('grid_coarse_approach', self._grid_approach, tol=WAYPOINT_TOL)
+        self.l('approach', self._approach, tol=WAYPOINT_TOL)
         self.l('descend', grasp, self.args.dvel)
 
     def grip_object(self):
@@ -527,7 +575,7 @@ class Cycle:
             raise RuntimeError('No object in the gripper (empty close)')
 
     def retract(self):
-        self.l('lift', self._above)
+        self.l('lift', self._above, tol=WAYPOINT_TOL)
         home = self.poses['poses']['home']['posx']
         self.l('home_carry', [home[0], home[1], home[2] + self.args.lift_extra, *home[3:]])
 

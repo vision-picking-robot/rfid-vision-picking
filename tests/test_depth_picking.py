@@ -125,3 +125,48 @@ def test_grip_still_fails_if_the_gripper_never_settles(monkeypatch):
     monkeypatch.setattr(project_cycle.time, 'sleep', lambda s: None)
     with pytest.raises(RuntimeError, match='not confirmed'):
         cyc.grip('grip', 740, lambda p: p >= 0, current=150, settle_s=0.0)
+
+
+@pytest.mark.parametrize('name_tol, off, ok', [(10.0, 3.1, True), (10.0, 12.0, False), (2.0, 3.1, False)])
+def test_waypoint_tolerance_only_relaxes_in_air_moves(monkeypatch, name_tol, off, ok):
+    cyc = object.__new__(project_cycle.Cycle)
+    cyc.estop, cyc.offset, cyc.logged = None, 120.0, []
+    cyc.args = SimpleNamespace(lvel=30.0)
+    cyc.mover = SimpleNamespace(movel=lambda *a: 0)
+    cyc.raw = None
+    cyc.log = lambda event, **kw: cyc.logged.append(event)
+    monkeypatch.setattr(project_cycle, 'FlangeOffset',
+                        lambda raw, offset: SimpleNamespace(get_current_posx=lambda ref: [680.5 - off, -124.2, 182.1, 0, 180, 0]))
+    call = lambda: cyc.l('approach', [680.5, -124.2, 182.1, 0, 180, 0], tol=name_tol)
+    if ok:
+        call()
+        assert 'arrival_offset' in cyc.logged
+    else:
+        with pytest.raises(RuntimeError, match='arrival error'):
+            call()
+
+
+def reach_cycle(limit_z):
+    """Cycle whose fake IK reaches fingertip z <= limit_z comfortably (elbow 30) and is clamped above."""
+    cyc = object.__new__(project_cycle.Cycle)
+    cyc.offset, cyc.logged = 120.0, []
+    cyc.log = lambda event, **kw: cyc.logged.append((event, kw))
+    cyc.raw = SimpleNamespace(elbow_deg=lambda flange: 30.0 if flange[2] - 120.0 <= limit_z + 1e-6 else 0.0)
+    return cyc
+
+
+def test_reach_z_lowers_waypoints_until_the_elbow_is_comfortable():
+    cyc = reach_cycle(limit_z=132.1)
+    assert cyc.reach_z('approach', [680.5, -124.2, 32.1, 0, 180, 3.3], 182.1, 73.0) == pytest.approx(132.1)
+    assert cyc.logged[0][0] == 'reach_limited'
+
+
+def test_reach_z_rejects_when_the_object_top_cannot_be_cleared():
+    cyc = reach_cycle(limit_z=150.0)
+    with pytest.raises(RuntimeError, match='too far'):
+        cyc.reach_z('approach', [659.6, 157.9, 153.3, 0, 180, -83.5], 303.3, 193.3)
+
+
+def test_reach_z_keeps_requested_height_when_reachable():
+    cyc = reach_cycle(limit_z=500.0)
+    assert cyc.reach_z('lift', [496, 189, 150, 0, 180, 0], 400.0, 300.0) == 400.0 and cyc.logged == []
