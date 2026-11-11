@@ -33,9 +33,11 @@ def list_readers():
     return [str(r) for r in readers()]
 
 
-def check(api, reader):
+def check(api, reader, need_reader=True):
     ok = True
     try:
+        if not need_reader:
+            raise LookupError  # keyboard mode: only the robot PC connection matters
         names = list_readers()
         say(f'PC/SC 리더 목록: {names or "없음"}')
         if reader:
@@ -50,6 +52,8 @@ def check(api, reader):
             ok = False
         else:
             say(f'O 사용할 리더: {match[0]}')
+    except LookupError:
+        pass
     except Exception as error:  # noqa: BLE001
         say(f'X PC/SC 오류: {error}  (pyscard 설치/Smart Card 서비스 확인)')
         ok = False
@@ -117,6 +121,34 @@ def wait_removed(scanner, uid):
         time.sleep(0.2)
 
 
+def keyboard_loop(api, quantity, lines=None, repeat_s=3.0):
+    """Send each typed line as a UID (reader in keyboard mode, or a person typing).
+
+    Spaces/colons are ignored and partial values are matched by the robot PC. The same tag
+    typed again within repeat_s seconds (a reader repeating while the tag rests) is skipped.
+    """
+    lines = lines if lines is not None else iter(input, None)
+    last_uid, last_at = None, 0.0
+    for line in lines:
+        raw = ''.join(ch for ch in line.upper() if ch in '0123456789ABCDEF')
+        if not raw:
+            continue
+        if len(raw) < 4:
+            say(f'X 너무 짧은 값입니다: {line.strip()!r} (4글자 이상 필요). 태그를 다시 찍어 주세요.')
+            continue
+        say(f'입력 UID: {raw}' + ('' if len(raw) >= 8 else '  (일부만 입력됨, 로봇 PC DB에서 매칭)'))
+        now = time.monotonic()
+        if raw == last_uid and now - last_at < repeat_s:
+            say('  같은 태그 반복 입력이라 건너뜁니다.')
+            continue
+        uid = submit(api, raw, quantity)
+        if uid:
+            last_uid, last_at = uid, now
+            if raw != uid:
+                last_uid = raw  # also skip the same partial value repeated right away
+        say('다음 태그를 찍어 주세요. (종료: Ctrl+C)')
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='ACR1555U -> robot PC RFID bridge')
     parser.add_argument('--api', required=True, help='robot PC dashboard URL, e.g. http://192.168.0.10:8000')
@@ -124,8 +156,20 @@ def main(argv=None):
     parser.add_argument('--quantity', type=int, default=1)
     parser.add_argument('--check', action='store_true', help='only check reader and robot PC connection')
     parser.add_argument('--read-only', action='store_true', help='print UIDs without sending them')
+    parser.add_argument('--keyboard', action='store_true',
+                        help='no PC/SC: read UIDs typed into this window (reader keyboard mode or manual entry)')
     args = parser.parse_args(argv)
     api = args.api.rstrip('/')
+    if args.keyboard:
+        if not check(api, args.reader, need_reader=False):
+            say('점검 실패로 종료합니다. 위 X 항목을 해결한 뒤 다시 실행하세요.')
+            return 1
+        say('이 창을 클릭해 둔 상태에서 태그를 찍어 주세요. 직접 UID를 입력하고 Enter를 눌러도 됩니다. (종료: Ctrl+C)')
+        try:
+            keyboard_loop(api, args.quantity)
+        except (KeyboardInterrupt, EOFError):
+            say('종료합니다.')
+        return 0
     if args.check:
         return 0 if check(api, args.reader) else 1
     if not args.read_only and not check(api, args.reader):
