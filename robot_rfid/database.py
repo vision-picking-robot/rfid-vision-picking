@@ -13,8 +13,52 @@ def normalize_uid(value: str) -> str:
     return value.replace(':', '').upper()
 
 
+MIN_PARTIAL_UID = 4  # hex chars (2 bytes) needed before a partial read may match a tag
+
+
+def clean_uid(value: str) -> str:
+    """Reader output as upper-case hex only: '0b e5:71-5d' -> '0BE5715D'. Length is not checked."""
+    return re.sub(r'[^0-9A-F]', '', str(value or '').upper())
+
+
+def _common_run(a: str, b: str) -> int:
+    """Length of the longest contiguous run shared by two short hex strings."""
+    best = 0
+    for i in range(len(a)):
+        for j in range(len(b)):
+            k = 0
+            while i + k < len(a) and j + k < len(b) and a[i + k] == b[j + k]:
+                k += 1
+            best = max(best, k)
+    return best
+
+
+def match_uid(raw: str, known_uids) -> str:
+    """Resolve a full or partial reader UID to exactly one registered tag.
+
+    The Bluetooth reader sometimes returns only part of the UID (e.g. 4 of 8 hex chars) or a
+    slightly different value. An exact match wins; otherwise the tag sharing the longest
+    contiguous run of hex chars (at least MIN_PARTIAL_UID) is used, but only when no other tag
+    shares an equally long run. All lab tags share '0B71'/'5D', so such fragments are rejected
+    as ambiguous instead of guessing. Raises KeyError (no match) or ValueError (ambiguous).
+    """
+    uid = clean_uid(raw)
+    known = [clean_uid(k) for k in known_uids]
+    if len(uid) < MIN_PARTIAL_UID:
+        raise KeyError(f'UID too short to match: {raw!r}')
+    if uid in known:
+        return uid
+    scored = sorted(((_common_run(uid, k), k) for k in known), reverse=True)
+    if not scored or scored[0][0] < MIN_PARTIAL_UID:
+        raise KeyError(f'no registered tag matches {uid}')
+    best = [k for score, k in scored if score == scored[0][0]]
+    if len(best) > 1:
+        raise ValueError(f'UID {uid} is ambiguous; matches {", ".join(sorted(best))}')
+    return best[0]
+
+
 SEEDS = [
-    ('0B71E55D', 'LOTTE-PEPERO-01', '아몬드 빼빼로', 'CONFECTIONERY', 0, 'snack_pepero', '2026-11-01 13:45:00', '2027-12-25 19:00:00', 2500, 'BOX-01'),
+    ('0BE5715D', 'LOTTE-PEPERO-01', '아몬드 빼빼로', 'CONFECTIONERY', 0, 'snack_pepero', '2026-11-01 13:45:00', '2027-12-25 19:00:00', 2500, 'BOX-01'),
     ('0B71E75D', 'BEV-PET-500ML', '제로 콜라 500ml', 'BEVERAGE', 1, 'beverage_pet', '2026-11-05 09:30:00', '2027-05-04 23:59:59', 1600, 'BOX-02'),
     ('0B71E65D', 'CAN-SPAM-200G', '스팸 클래식 200g', 'CANNED', 2, 'canned_meat', '2026-10-15 10:00:00', '2029-10-14 23:59:59', 4800, 'BOX-03'),
     ('0B71ED5D', 'SAN-WIPES-100', '물티슈', 'SANITARY', 3, 'wet_wipes', '2026-11-02 16:20:00', '2028-11-01 23:59:59', 2200, 'BOX-04'),
@@ -73,10 +117,33 @@ class Database:
                 CREATE UNIQUE INDEX IF NOT EXISTS one_active_tag ON tasks(tag_uid)
                     WHERE status IN ('READY','PICKING');
             ''')
+        self._migrate_seed_uids()
+        with self.connect() as db:
             db.executemany('''INSERT OR IGNORE INTO product_tag_mappings
                 (tag_uid,sku_code,product_name,category,target_class_id,yolo_class_name,
                  inbound_at,expired_at,retail_price,target_box_id)
                 VALUES (?,?,?,?,?,?,?,?,?,?)''', SEEDS)
+
+    def _migrate_seed_uids(self):
+        """Move a seeded product to its new tag UID (and its task history) when the seed changed."""
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute('PRAGMA defer_foreign_keys=ON')
+            for seed in SEEDS:
+                new_uid, sku = seed[0], seed[1]
+                row = db.execute('SELECT tag_uid FROM product_tag_mappings WHERE sku_code=?', (sku,)).fetchone()
+                if not row or row['tag_uid'] == new_uid:
+                    continue
+                if db.execute('SELECT 1 FROM product_tag_mappings WHERE tag_uid=?', (new_uid,)).fetchone():
+                    continue  # UID already used by another product; leave the DB for a human to fix
+                db.execute('UPDATE product_tag_mappings SET tag_uid=? WHERE sku_code=?', (new_uid, sku))
+                db.execute('UPDATE tasks SET tag_uid=? WHERE tag_uid=?', (new_uid, row['tag_uid']))
+
+    def resolve_uid(self, raw):
+        """Full registered UID for a full or partial reader value (see match_uid)."""
+        with self.connect() as db:
+            known = [r['tag_uid'] for r in db.execute('SELECT tag_uid FROM product_tag_mappings')]
+        return match_uid(raw, known)
 
     def product(self, uid):
         with self.connect() as db:

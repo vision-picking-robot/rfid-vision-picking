@@ -30,7 +30,7 @@ sys.path.insert(0, str(ROOT))
 from vision_picking.legacy.safe_move import DR_BASE, SafeMover  # noqa: E402
 from vision_picking.pick_plane import Calibration, DEFAULT_GRID_COLS, DEFAULT_GRID_ROWS, PickPlane, compute_safe_grasp_z  # noqa: E402
 
-TAGS = {'0B71E55D': ('snack_pepero', 1), '0B71E75D': ('beverage_pet', 2), '0B71E65D': ('canned_meat', 3),
+TAGS = {'0BE5715D': ('snack_pepero', 1), '0B71E75D': ('beverage_pet', 2), '0B71E65D': ('canned_meat', 3),
         '0B71ED5D': ('wet_tissue', 4), '0B71EC5D': ('doll', 5)}
 OPEN_MAX = 10
 JOINT_TOL = 1.0
@@ -119,7 +119,7 @@ class MockRaw:
         return dict(code=1, result='ok', voltage=24.1, position_pulses=self.position, current=0, moving=0)
 
     def scan(self):
-        return '0B71E55D'
+        return '0BE5715D'
 
     def raise_posj(self, posj, dz):
         raised = [posj[0], posj[1] - 0.001 * dz, *posj[2:]]
@@ -572,7 +572,7 @@ def main(argv=None):
     parser.add_argument('--namespace', default='dsr01')
     parser.add_argument('--cycles', type=int, default=1, help='0 = until Ctrl+C or first error')
     parser.add_argument('--product', default='snack_pepero', help='fallback when no RFID reader is attached')
-    parser.add_argument('--tag', default='0B71E55D', help='preset tag used when no RFID reader is attached')
+    parser.add_argument('--tag', default='0BE5715D', help='preset tag used when no RFID reader is attached')
     parser.add_argument('--jvel', type=float, default=10.0, help='deg/s')
     parser.add_argument('--lvel', type=float, default=30.0, help='mm/s for transfer moves')
     parser.add_argument('--dvel', type=float, default=15.0, help='mm/s for descents')

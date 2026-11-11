@@ -90,13 +90,13 @@ windows_rfid_bridge\4_run_bridge.bat
 태그를 올리면 다음처럼 표시되고 로봇이 집으러 간다.
 
 ```
-[22:45:01] 태그 UID: 0B71E55D
+[22:45:01] 태그 UID: 0BE5715D
 [22:45:01]   DB 매칭: 아몬드 빼빼로 (snack_pepero) -> BOX-01
 [22:45:01] O 작업 등록: task=1f86a7f8 상태=QUEUED -> 로봇이 집으러 갑니다
 [22:45:03] 태그를 뗐습니다. 다음 태그를 올려 주세요.
 ```
 
-- 등록된 태그: `0B71E55D` 빼빼로/BOX-01, `0B71E75D` 생수·콜라/BOX-02, `0B71E65D` 스팸/BOX-03,
+- 등록된 태그: `0BE5715D` 빼빼로/BOX-01, `0B71E75D` 생수·콜라/BOX-02, `0B71E65D` 스팸/BOX-03,
   `0B71ED5D` 물티슈/BOX-04, `0B71EC5D` 인형/BOX-05
 - 로봇 PC로 보내지 않고 UID만 보려면 `windows_rfid_bridge\read_uid_only.bat`
 - `X 등록 거부 4xx`: DB에 없는 태그이거나 상품 상태 문제. 대시보드에서 태그 등록을 확인한다.

@@ -21,8 +21,8 @@ class FakeScanner:
 
 
 def test_tag_resting_on_reader_is_not_resent():
-    scanner = FakeScanner(['0B71E55D', '0B71E55D', None])
-    bridge.wait_removed(scanner, '0B71E55D')
+    scanner = FakeScanner(['0BE5715D', '0BE5715D', None])
+    bridge.wait_removed(scanner, '0BE5715D')
     assert scanner.sequence == []
 
 
@@ -43,5 +43,5 @@ def test_submit_reuses_event_id_after_transport_error(monkeypatch):
     monkeypatch.setattr(bridge.httpx, 'get', fake_get)
     monkeypatch.setattr(bridge.httpx, 'post', fake_post)
     monkeypatch.setattr(bridge.time, 'sleep', lambda s: None)
-    assert bridge.submit('http://robot:8000', '0B71E55D', 1) is True
+    assert bridge.submit('http://robot:8000', '0BE5715D', 1) == '0BE5715D'
     assert len(sent) == 2 and sent[0] == sent[1]

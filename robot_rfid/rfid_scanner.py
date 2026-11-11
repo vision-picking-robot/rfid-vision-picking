@@ -7,9 +7,9 @@ from uuid import uuid4
 import httpx
 
 try:
-    from .database import normalize_uid
+    from .database import clean_uid
 except ImportError:
-    from database import normalize_uid
+    from database import clean_uid
 
 GET_UID = [0xFF, 0xCA, 0x00, 0x00, 0x00]
 log = logging.getLogger(__name__)
@@ -43,7 +43,12 @@ class RFIDScanner:
                 data, sw1, sw2 = connection.transmit(GET_UID)
                 if (sw1, sw2) != (0x90, 0x00):
                     raise RuntimeError(f'Get UID rejected: {sw1:02X}{sw2:02X}')
-                return normalize_uid(''.join(f'{byte:02X}' for byte in data))
+                # Raw hex; the Bluetooth reader sometimes returns a partial UID, which the
+                # robot PC resolves against the DB (database.match_uid).
+                uid = clean_uid(''.join(f'{byte:02X}' for byte in data))
+                if uid:
+                    return uid
+                raise NoCardException('empty UID')
             except NoCardException:
                 delay = 0.25
             except (CardConnectionException, ConnectionError) as exc:

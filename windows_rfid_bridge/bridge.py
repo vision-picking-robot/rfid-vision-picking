@@ -65,15 +65,22 @@ def check(api, reader):
 
 
 def submit(api, uid, quantity):
-    info = None
+    """Send the raw reader value; the robot PC matches it (even partial) to one DB tag.
+
+    Returns the matched full UID, or None when the robot PC rejected or could not be reached.
+    """
     try:
         r = httpx.get(f'{api}/api/v1/tags/{uid}', timeout=5)
         if r.status_code == 200:
             info = r.json()
-    except httpx.HTTPError:
-        pass
-    if info:
-        say(f'  DB 매칭: {info.get("product_name")} ({info.get("yolo_class_name")}) -> {info.get("target_box_id")}')
+            note = '' if info.get('tag_uid') == uid else f' (읽은 값 {uid} -> {info.get("tag_uid")})'
+            say(f'  DB 매칭: {info.get("product_name")} ({info.get("yolo_class_name")}) -> {info.get("target_box_id")}{note}')
+        elif r.status_code in (404, 409):
+            say(f'X DB 매칭 실패 {r.status_code}: {r.json().get("detail", r.text)[:200]}')
+            say('  태그를 뗐다가 다시 올려 주세요.')
+            return None
+    except (httpx.HTTPError, ValueError):
+        pass  # the scan-event below reports the real error
     payload = dict(uid=uid, quantity=quantity, event_id=str(uuid4()))
     # Retry the same event_id after an uncertain outcome so the robot never gets a duplicate task.
     for attempt in range(5):
@@ -81,24 +88,31 @@ def submit(api, uid, quantity):
             r = httpx.post(f'{api}/api/v1/scan-event', json=payload, timeout=10)
             if r.is_error:
                 say(f'X 등록 거부 {r.status_code}: {r.text[:200]}  (DB에 등록된 태그인지 확인)')
-                return False
-            task = r.json().get('task') or {}
+                return None
+            body = r.json()
+            task = body.get('task') or {}
             say(f'O 작업 등록: task={task.get("task_id", "?")[:8]} 상태={task.get("status")} -> 로봇이 집으러 갑니다')
-            return True
+            return body.get('uid') or uid
         except httpx.TransportError as error:
             if attempt == 4:
                 say(f'X 로봇 PC 전송 실패: {error}')
-                return False
+                return None
             time.sleep(min(2 ** attempt, 8))
-    return False
+    return None
 
 
 def wait_removed(scanner, uid):
+    """Block until the tag leaves the reader.
+
+    Partial reads of the resting tag are ignored; only "no card" or a different full-length UID
+    counts as removed, so a flaky read never queues the same tag twice.
+    """
     while True:
         try:
-            if scanner.scan(timeout=0.8) != uid:
-                return
+            seen = scanner.scan(timeout=0.8)
         except TimeoutError:
+            return
+        if len(seen) >= len(uid) and seen != uid:
             return
         time.sleep(0.2)
 
@@ -125,9 +139,9 @@ def main(argv=None):
                 uid = scanner.scan(timeout=3600)
             except TimeoutError:
                 continue
-            say(f'태그 UID: {uid}')
+            say(f'태그 UID: {uid}' + ('' if len(uid) >= 8 else '  (일부만 읽힘, 로봇 PC DB에서 매칭)'))
             if not args.read_only:
-                submit(api, uid, args.quantity)
+                uid = submit(api, uid, args.quantity) or uid
             wait_removed(scanner, uid)
             say('태그를 뗐습니다. 다음 태그를 올려 주세요.')
     except KeyboardInterrupt:

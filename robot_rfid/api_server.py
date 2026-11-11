@@ -13,12 +13,12 @@ from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, field_validator
 import yaml
 
 try:
-    from .database import Database, SEED_TAGS, normalize_uid
+    from .database import Database, MIN_PARTIAL_UID, SEED_TAGS, clean_uid, normalize_uid
     from .mobile_remote_ui import MANIFEST_JSON, MOBILE_REMOTE_HTML
     from .rfid_scanner import RFIDScanner
     from .services import ReaderBusy, ReaderUnavailable, enqueue_scan, scan_uid
 except ImportError:
-    from database import Database, SEED_TAGS, normalize_uid
+    from database import Database, MIN_PARTIAL_UID, SEED_TAGS, clean_uid, normalize_uid
     from mobile_remote_ui import MANIFEST_JSON, MOBILE_REMOTE_HTML
     from rfid_scanner import RFIDScanner
     from services import ReaderBusy, ReaderUnavailable, enqueue_scan, scan_uid
@@ -29,6 +29,7 @@ class StrictInput(BaseModel):
 
 
 class ScanEvent(StrictInput):
+    # Raw reader value; may be partial (Bluetooth reader). Resolved against the DB in the route.
     uid: str
     quantity: int = Field(default=1, ge=1, le=10000)
     event_id: str = Field(default_factory=lambda: str(uuid4()), min_length=1, max_length=128)
@@ -36,7 +37,10 @@ class ScanEvent(StrictInput):
     @field_validator('uid')
     @classmethod
     def valid_uid(cls, value):
-        return normalize_uid(value)
+        value = clean_uid(value)
+        if not MIN_PARTIAL_UID <= len(value) <= 14:
+            raise ValueError(f'UID must contain {MIN_PARTIAL_UID}-14 hexadecimal characters')
+        return value
 
 
 class Progress(StrictInput):
@@ -155,25 +159,35 @@ def install_rfid_routes(app: FastAPI, db_path=None):
     async def list_tags():
         return {'tags': await asyncio.to_thread(db.products)}
 
+    async def resolve(raw):
+        """Registered UID for a full or partial reader value: 422 malformed, 404 unknown, 409 ambiguous."""
+        if not MIN_PARTIAL_UID <= len(clean_uid(raw)) <= 14:
+            raise HTTPException(422, f'UID must contain {MIN_PARTIAL_UID}-14 hexadecimal characters')
+        try:
+            return await asyncio.to_thread(db.resolve_uid, raw)
+        except KeyError as exc:
+            raise HTTPException(404, f'Unknown tag: {exc.args[0] if exc.args else raw}') from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
     @app.get('/api/v1/tags/{uid}')
     async def get_tag(uid: str):
-        try:
-            product = await asyncio.to_thread(db.product, uid)
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from exc
+        product = await asyncio.to_thread(db.product, await resolve(uid))
         if product is None:
             raise HTTPException(404, 'Unknown tag')
         return product
 
     @app.post('/api/v1/scan-event')
     async def scan(event: ScanEvent):
+        uid = await resolve(event.uid)
         try:
-            task, created = await asyncio.to_thread(db.enqueue, event.uid, event.quantity, event.event_id)
+            task, created = await asyncio.to_thread(db.enqueue, uid, event.quantity, event.event_id)
         except KeyError as exc:
             raise HTTPException(404, 'Unknown tag') from exc
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
-        packet = {'type': 'scan', 'task': task, 'product': await asyncio.to_thread(db.product, event.uid)}
+        packet = {'type': 'scan', 'raw_uid': event.uid, 'uid': uid, 'task': task,
+                  'product': await asyncio.to_thread(db.product, uid)}
         if created:
             broadcast(packet)
         return {**packet, 'created': created}

@@ -38,7 +38,7 @@ def test_voice_and_manual_commands_share_packing_processor(tmp_path):
         response = client.post('/api/voice/transcript',json=dict(session=voice['session'],turn=voice['turn'],text='피킹 재개해줘'))
         assert response.status_code==200
         assert client.app.state.pipeline.packing.order(123)['paused'] is False
-        assert client.post('/api/packing/rfid-scan',json={'uid':'0B71E55D'}).json()['created'] is True
+        assert client.post('/api/packing/rfid-scan',json={'uid':'0BE5715D'}).json()['created'] is True
 
 
 if __name__ == '__main__':

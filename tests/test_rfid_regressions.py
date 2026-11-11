@@ -49,7 +49,7 @@ def test_duplicate_tag_returns_that_tags_task_not_fifo_head(tmp_path, dashboard)
     app = create_web_app(Settings(camera_autostart=False), state_root=tmp_path) if dashboard else create_app(tmp_path/'rfid.db')
     route = '/api/packing/rfid-scan' if dashboard else '/api/v1/rfid/scan'
     with TestClient(app) as client:
-        first = client.post(route, json={'uid': '0B71E55D'}).json()
+        first = client.post(route, json={'uid': '0BE5715D'}).json()
         second = client.post(route, json={'uid': '0B71E75D'}).json()
         duplicate = client.post(route, json={'uid': '0B71E75D'}).json()
         assert first['created'] and second['created']
@@ -78,7 +78,7 @@ def test_concurrent_scan_is_rejected_without_blocking_reads(tmp_path):
     def scan(timeout):
         entered.set()
         if not release.wait(3): raise TimeoutError('test stalled')
-        return '0B71E55D'
+        return '0BE5715D'
     with TestClient(create_app(tmp_path/'rfid.db')) as client, patch('robot_rfid.services.RFIDScanner.scan', side_effect=scan), ThreadPoolExecutor(1) as workers:
         first = workers.submit(client.post, '/api/v1/rfid/scan', json={})
         try:
@@ -93,7 +93,7 @@ def test_concurrent_scan_is_rejected_without_blocking_reads(tmp_path):
 
 def test_reader_event_id_replay_and_conflict(tmp_path):
     with TestClient(create_app(tmp_path/'rfid.db')) as client:
-        body = dict(uid='0B71E55D', event_id='reader-event-1', quantity=1)
+        body = dict(uid='0BE5715D', event_id='reader-event-1', quantity=1)
         first = client.post('/api/v1/rfid/scan', json=body).json()
         assert client.post('/api/v1/rfid/scan', json=body).json()['task'] == first['task']
         assert client.post('/api/v1/rfid/scan', json={**body,'uid':'0B71E75D'}).status_code == 409
@@ -102,4 +102,4 @@ def test_reader_event_id_replay_and_conflict(tmp_path):
 @pytest.mark.parametrize('quantity', [True, '1', 1.5])
 def test_scan_does_not_coerce_quantity(tmp_path, quantity):
     with TestClient(create_app(tmp_path/'rfid.db')) as client:
-        assert client.post('/api/v1/rfid/scan', json={'uid':'0B71E55D','quantity':quantity}).status_code == 422
+        assert client.post('/api/v1/rfid/scan', json={'uid':'0BE5715D','quantity':quantity}).status_code == 422
