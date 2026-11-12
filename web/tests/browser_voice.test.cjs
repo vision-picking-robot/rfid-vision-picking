@@ -2,7 +2,7 @@ const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const source = fs.readFileSync(require('node:path').join(__dirname,'../app/static/browser-voice.js'),'utf8').replace('export class BrowserVoice','globalThis.BrowserVoice = class BrowserVoice');
+const source = fs.readFileSync(require('node:path').join(__dirname,'../app/static/browser-voice.js'),'utf8').replace(/^export function /gm,'function ').replace('export class BrowserVoice','globalThis.BrowserVoice = class BrowserVoice');
 
 function setup() {
   const instances = [], calls = [], updates = [];

@@ -531,6 +531,11 @@ def install_rfid_routes(app: FastAPI, db_path=None):
             broadcast(packet)
         return {'ok': True, **packet}
 
+    def pause_packing(pipeline, paused):
+        """Mirror pause/stop on the dashboard packing demo (order 123)."""
+        packing = pipeline.packing
+        (getattr(packing, 'set_paused', None) or packing.pause)(123, paused)
+
     @app.post('/api/v1/mobile/control')
     async def mobile_control(body: MobileControlInput):
         cmd = body.command
@@ -544,7 +549,7 @@ def install_rfid_routes(app: FastAPI, db_path=None):
                 ctrl.cancel.set()
             if pipeline is not None and hasattr(pipeline, 'packing'):
                 try:
-                    pipeline.packing.set_paused(123, True)
+                    pause_packing(pipeline, True)
                 except Exception:
                     pass
         elif cmd == 'pause':
@@ -552,7 +557,7 @@ def install_rfid_routes(app: FastAPI, db_path=None):
             mobile_state['robot_state'] = 'PAUSED'
             if pipeline is not None and hasattr(pipeline, 'packing'):
                 try:
-                    pipeline.packing.set_paused(123, True)
+                    pause_packing(pipeline, True)
                 except Exception:
                     pass
         elif cmd in ('start', 'resume', 'reset_stop'):
@@ -564,7 +569,7 @@ def install_rfid_routes(app: FastAPI, db_path=None):
             mobile_state['robot_state'] = 'STANDBY'
             if pipeline is not None and hasattr(pipeline, 'packing'):
                 try:
-                    pipeline.packing.set_paused(123, False)
+                    pause_packing(pipeline, False)
                 except Exception:
                     pass
         elif cmd == 'home':
@@ -600,6 +605,35 @@ def install_rfid_routes(app: FastAPI, db_path=None):
         record_mobile_event('remote_control', **packet)
         broadcast(packet)
         return {'ok': True, **packet}
+
+    # ---- Hooks for in-process callers (the dashboard voice assistant): same paths as the phone ----
+    async def control_command(command):
+        """Run a phone control command; returns the packet, or raises HTTPException like the route."""
+        return await mobile_control(MobileControlInput(command=command))
+
+    async def queue_pick(uid, source='voice'):
+        """Queue a pick task for a registered tag exactly as a reader scan would."""
+        uid = await resolve(uid)
+        product = await asyncio.to_thread(db.product, uid)
+        try:
+            task, created = await asyncio.to_thread(db.enqueue, uid, 1, str(uuid4()))
+        except ValueError as exc:
+            note_scan(uid, source, uid=uid, product=product,
+                      error='이미 대기/진행 중인 작업이 있습니다' if 'active task' in str(exc) else str(exc))
+            raise HTTPException(409, str(exc)) from exc
+        note_scan(uid, source, uid=uid, product=product, task=task, created=created)
+        if created:
+            broadcast({'type': 'scan', 'source': source, 'uid': uid, 'task': task, 'product': product})
+        return {'uid': uid, 'task': task, 'product': product, 'created': created}
+
+    async def robot_snapshot():
+        return {**{k: mobile_state[k] for k in ('robot_state', 'paused', 'emergency_stopped', 'robot_link', 'last_scan',
+                                                'last_completed_event')},
+                'robot_connected': robot_connected(), 'current_task': await asyncio.to_thread(db.current_task)}
+
+    app.state.robot_control = control_command
+    app.state.robot_queue_pick = queue_pick
+    app.state.robot_snapshot = robot_snapshot
 
     @app.get('/api/v1/grid/config')
     async def grid_config(rows: int = 15, cols: int = 15):

@@ -25,6 +25,7 @@ from .robot_web import install_robot_routes, robot_runtime
 from .store import DomainError
 from .training_api import router
 from .voice import Voice, router as voice_router
+from .robot_voice import RobotVoice
 from .picking_integration import router as picking_integration_router
 
 STATIC = Path(__file__).parent / "static"
@@ -81,6 +82,7 @@ def create_app(settings=None, pipeline_factory=Pipeline, state_root=None):
         pipeline = await asyncio.to_thread(Runtime, settings, pipeline_factory, state_root or settings.state_dir)
         application.state.pipeline = pipeline
         voice = Voice(pipeline.packing, settings.voice_enabled, barge_in=settings.voice_barge_in)
+        voice.robot = RobotVoice(application)  # spoken robot commands via the phone-remote paths
         application.state.voice = voice
         try:
             pipeline.start()

@@ -2,6 +2,7 @@ import { currentDestination, icon } from "./station-nav.js";
 import { demo, legacyUsers, record } from "./packing-demo.js";
 import { connectDashboardCamera } from "./dashboard-camera.js";
 import { BrowserVoice } from "./browser-voice.js";
+import { ClapWake } from "./clap-wake.js";
 
 const root = document.getElementById("packing-station");
 const view = document.getElementById("demo-view");
@@ -14,7 +15,49 @@ let form = "";
 let voiceOpen = false;
 let voiceStatus = null;
 let voiceSerial = 0;
-const browserVoice = new BrowserVoice(status => { ++voiceSerial; voiceStatus = status; renderVoice(); });
+const browserVoice = new BrowserVoice(status => {
+  ++voiceSerial; voiceStatus = status;
+  // A finished conversation (silence, "대화 종료", error) goes back to waiting for a double clap.
+  if (clapArmed && !browserVoice.active && !browserVoice.starting && !waking && ["idle", "error"].includes(status.state)) {
+    void clapWake.arm().catch(error => { clapNote = error.message; renderVoice(); });
+  }
+  renderVoice();
+});
+// Double clap -> "음성 인식을 시작합니다" -> speech recognition, then back to the clap wait.
+let clapArmed = false, clapNote = "", waking = false;
+const clapWake = new ClapWake(() => void clapTriggered());
+const WAKE_PHRASE = "음성 인식을 시작합니다";
+
+function sayAndWait(text, timeoutMs = 4000) {
+  return new Promise(resolve => {
+    const synth = window.speechSynthesis;
+    if (!synth || !window.SpeechSynthesisUtterance) return resolve();
+    const speech = new SpeechSynthesisUtterance(text);
+    speech.lang = "ko-KR";
+    const done = () => { clearTimeout(timer); resolve(); };
+    const timer = setTimeout(done, timeoutMs);
+    speech.onend = speech.onerror = done;
+    synth.speak(speech);
+  });
+}
+
+async function clapTriggered() {
+  if (!clapArmed || browserVoice.active || waking) return;
+  waking = true;
+  clapNote = "";
+  voiceStatus = {...(voiceStatus || {}), state: "preparing"};
+  renderVoice();
+  try {
+    await sayAndWait(WAKE_PHRASE);
+    if (clapArmed) await browserVoice.start();
+  } catch (error) {
+    clapNote = error.message;
+  } finally {
+    waking = false;
+    if (clapArmed && !browserVoice.active) void clapWake.arm().catch(error => { clapNote = error.message; });
+    renderVoice();
+  }
+}
 const voiceStates = {disabled: "음성 기능 꺼짐", idle: "호출 대기", preparing: "마이크 준비 중", preparing_reply: "Yuna 응답 준비 중",
   permission: "브라우저의 마이크 접근 창에서 허용을 눌러 주세요.", listening: "듣는 중", processing: "명령 처리 중", speaking: "Yuna 응답 중", stopping: "청취 중단 중", error: "음성 오류"};
 let reply = "";
@@ -352,12 +395,20 @@ function renderVoice() {
   let stateLabel = voiceStates[status.state];
   if (status.state === "speaking" && status.barge_in) stateLabel = "Yuna 응답 중 · 지금 말해도 됩니다";
   if (status.state === "listening" && status.last_playback === "interrupted") stateLabel = "낭독 중단 · 듣는 중";
-  const canWake = !status.can_stop && ["idle", "error"].includes(status.state);
-  const hint = status.error || (status.state === "disabled" ? "YOLO_VOICE_ENABLED=1로 서버를 시작하세요." : "");
+  const canWake = !status.can_stop && ["idle", "error"].includes(status.state) && !waking;
+  if (clapArmed && clapWake.listening && canWake) stateLabel = "박수 두 번 치면 음성 인식을 시작합니다";
+  const auto = status.auto;
+  if (auto?.active) {
+    const phase = {starting: "시작", scanning: "태그 인식 중", picking: "피킹 중", next: "다음 박스 준비",
+      swap_wait: "박스 교환 대기 · 교환 후 '상자 교환 완료'라고 말씀해 주세요"}[auto.phase] || auto.phase;
+    stateLabel = `피킹 로봇 가동 중 · ${auto.done}/${auto.total} · ${phase}${auto.muted ? " (음성 명령 차단)" : ""}`;
+  }
+  const hint = clapNote || status.error || (status.state === "disabled" ? "YOLO_VOICE_ENABLED=1로 서버를 시작하세요." : "");
   voicePanel.innerHTML = `<div class="row"><h3>음성 명령</h3>${button("voice", "닫기", "link")}</div>
     <p role="status">${escapeHtml(stateLabel || "상태 확인 중")}</p>
-    <div class="buttons">${button("wake", "대화 시작", "main-btn", !canWake)}
-      ${button("stop-listening", "청취 중단", "stop-btn", !status.can_stop)}</div>
+    <div class="buttons">${button("wake", "음성 명령 켜기 (박수 대기)", "main-btn", clapArmed || status.state === "disabled")}
+      ${button("listen-now", "바로 듣기", "", !canWake)}
+      ${button("stop-listening", "음성 명령 끄기", "stop-btn", !clapArmed && !status.can_stop)}</div>
     ${hint ? `<p>${escapeHtml(hint)}</p>` : ""}
     ${status.transcript ? `<p>작업자 · ${escapeHtml(status.transcript)}</p>` : ""}
     ${status.reply ? `<p>Yuna · ${escapeHtml(status.reply)}</p>` : ""}
@@ -427,8 +478,18 @@ function showOrder(id) {
 }
 
 const actions = {
-  wake() { return browserVoice.start(); },
-  "stop-listening"() { return browserVoice.stop(); },
+  async wake() {
+    clapArmed = true;
+    clapNote = "";
+    try { await clapWake.arm(); } catch (error) { clapArmed = false; clapNote = "마이크를 열 수 없습니다: " + error.message; }
+    renderVoice();
+  },
+  "listen-now"() { clapWake.pause(); return browserVoice.start(); },
+  "stop-listening"() {
+    clapArmed = false;
+    clapWake.disarm();
+    return browserVoice.stop();
+  },
   async voice() {
     voiceOpen = !voiceOpen;
     if (voiceOpen) await updateVoice();
@@ -521,8 +582,8 @@ root.addEventListener("click", async event => {
   const firstField = view.querySelector("form input:not([type=hidden]), form select");
   if (firstField) firstField.focus();
   else {
-    const selector = ["wake", "stop-listening"].includes(action)
-      ? '#voice-panel [data-action="wake"]:enabled, #voice-panel [data-action="stop-listening"]:enabled'
+    const selector = ["wake", "listen-now", "stop-listening"].includes(action)
+      ? '#voice-panel [data-action="wake"]:enabled, #voice-panel [data-action="listen-now"]:enabled, #voice-panel [data-action="stop-listening"]:enabled'
       : `[data-action="${CSS.escape(action)}"]:not(:disabled)`;
     const nextControl = root.querySelector(selector);
     if (nextControl && !nextControl.closest("[hidden]")) nextControl.focus({ preventScroll: true });
