@@ -551,12 +551,22 @@ class Cycle:
                getattr(self.args, 'scan_vel', 10.0), scaled=False)
 
     def scan(self):
+        uid = self.raw.scan()
+        if uid:
+            self.log('rfid', uid=uid, reader='real')
+        elif self.args.tag:  # only when the operator passed --tag explicitly
+            uid = self.args.tag
+            self.log('rfid', uid=uid, reader='preset')
+        else:
+            self.scan_retract()
+            raise RuntimeError('RFID reader read no tag (no reader on this PC?); not inventing one')
+        self.scan_retract()
+        return uid
+
+    def scan_retract(self):
         P = self.poses['poses']
-        uid = self.raw.scan() or self.args.tag
-        self.log('rfid', uid=uid, reader='real' if uid != self.args.tag else 'preset')
         self.l('label_scan_retract', P['label_scan_approach']['posx'])
         self.j('home_after_scan', P['home']['posj'])
-        return uid
 
     def correct_base(self, base):
         """Depth-camera BASE x,y -> measured robot x,y (depth_picking.base_correction, hand-taught points)."""
@@ -857,20 +867,44 @@ def remote_home(runner, remote, cmd):
     remote.report('IDLE', '홈 복귀 완료 — 대기 중입니다.')
 
 
+def last_scan_seq(api):
+    return (api.get('/api/v1/last-scan').raise_for_status().json().get('last_scan') or {}).get('seq')
+
+
+def wait_bridge_scan(api, before_seq, timeout, check, period=0.3):
+    """The next tag read the web recorded after `before_seq` (any source), or None after `timeout` s."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        check()
+        scan = api.get('/api/v1/last-scan').raise_for_status().json().get('last_scan')
+        if scan and scan.get('seq') != before_seq:
+            return scan
+        time.sleep(period)
+    return None
+
+
 def remote_scan(runner, remote, api, cmd, log):
-    """Phone [리더기 스캔 출동]: read the box tag with the arm's reader and queue it as a task."""
+    """Phone [리더기 스캔 출동] with the reader on the arm: lower it onto the box tag and wait for the
+    Windows bridge to send what it read (its POST /api/v1/scan-event queues the task, which the main
+    loop then picks). Nothing is queued when no tag arrives in time; a tag is never invented."""
     remote.busy = True
     remote.report('SCANNING', '리더기 위치로 이동해 태그를 읽습니다.', ack=cmd['seq'], result='done')
+    wait_s = float(getattr(runner.args, 'scan_wait', 10.0))
     try:
+        before = last_scan_seq(api)  # before moving: a read during the descent still counts
         runner.pre_scan()
-        uid = runner.scan()
-        res = api.post('/api/v1/scan-event', json={'uid': uid, 'quantity': 1})
-        if res.status_code >= 400:
-            detail = res.json().get('detail') if res.headers.get('content-type', '').startswith('application/json') else res.text
-            log('remote_scan_rejected', uid=uid, status=res.status_code, detail=detail)
-            remote.report('IDLE', f'태그 {uid} 등록 실패: {detail}')
+        log('scan_waiting', seconds=wait_s, note='waiting for the Windows bridge to send the tag UID')
+        remote.report('SCANNING', f'태그 대기 중 (최대 {wait_s:.0f}초) — 리더기가 태그를 읽으면 작업이 등록됩니다.')
+        scan = wait_bridge_scan(api, before, wait_s, runner._estop_check)
+        runner.scan_retract()
+        if scan is None:
+            log('remote_scan_timeout', seconds=wait_s)
+            remote.report('IDLE', f'{wait_s:.0f}초 안에 태그가 읽히지 않아 작업을 만들지 않았습니다.')
+        elif not scan.get('accepted'):
+            log('remote_scan_rejected', uid=scan.get('raw_uid'), detail=scan.get('error'))
+            remote.report('IDLE', f"태그 {scan.get('raw_uid')} 거부: {scan.get('error')}")
         else:
-            log('remote_scan_queued', uid=uid)
+            log('remote_scan_queued', uid=scan.get('uid'), task_id=scan.get('task_id'), product=scan.get('product_name'))
     finally:
         remote.busy = False
 
@@ -968,7 +1002,8 @@ def main(argv=None):
     parser.add_argument('--namespace', default='dsr01')
     parser.add_argument('--cycles', type=int, default=1, help='0 = until Ctrl+C or first error')
     parser.add_argument('--product', default='snack_pepero', help='fallback when no RFID reader is attached')
-    parser.add_argument('--tag', default='0B71E55D', help='preset tag used when no RFID reader is attached')
+    parser.add_argument('--tag', default=None,
+                        help='preset tag used when the reader reads nothing (only if given; never assumed)')
     parser.add_argument('--jvel', type=float, default=10.0, help='deg/s')
     parser.add_argument('--lvel', type=float, default=30.0, help='mm/s for transfer moves')
     parser.add_argument('--dvel', type=float, default=15.0, help='mm/s for descents')
@@ -985,6 +1020,8 @@ def main(argv=None):
                         help='speed factor (x jvel/lvel/dvel) while the gripper is empty')
     parser.add_argument('--load-speed', type=float, default=1.25,
                         help='speed factor from the descend to the grasp until the release (holding the object)')
+    parser.add_argument('--scan-wait', type=float, default=10.0,
+                        help='[리더기 스캔 출동]: seconds to wait at the reader for the Windows bridge to send a tag')
     parser.add_argument('--scan-vel', type=float, default=10.0,
                         help='mm/s for the final descent onto the tag reader position (not scaled by --empty-speed)')
     parser.add_argument('--require-object', action='store_true', help='fail when the gripper closes empty')

@@ -261,6 +261,8 @@ def install_rfid_routes(app: FastAPI, db_path=None):
         record_mobile_event('tag_scanned', **{k: v for k, v in entry.items() if k not in ('seq', 'timestamp')})
         return entry
 
+    app.state.note_scan = note_scan  # other routes on this app (dashboard RFID buttons) report reads too
+
     @app.get('/api/v1/last-scan')
     async def last_scan():
         return {'last_scan': mobile_state['last_scan']}

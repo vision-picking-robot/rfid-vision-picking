@@ -36,3 +36,25 @@ def test_last_scan_follows_accepted_and_rejected_tags(tmp_path):
 
 def test_phone_page_renders_the_last_scan_card():
     assert 'id="tagFeed"' in MOBILE_REMOTE_HTML and 'renderLastScan(data.last_scan)' in MOBILE_REMOTE_HTML
+
+
+def test_cycle_scan_never_invents_a_tag_when_the_reader_reads_nothing():
+    import importlib.util
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    import pytest
+    spec = importlib.util.spec_from_file_location('pc_scan', Path(__file__).resolve().parents[1] / 'scripts/project_cycle.py')
+    pc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pc)
+    cyc = object.__new__(pc.Cycle)
+    moves = []
+    cyc.raw = SimpleNamespace(scan=lambda: None)
+    cyc.args = SimpleNamespace(tag=None)
+    cyc.log = lambda *a, **k: None
+    cyc.scan_retract = lambda: moves.append('retract')
+    with pytest.raises(RuntimeError, match='no tag'):
+        cyc.scan()
+    assert moves == ['retract']  # still backs away from the reader
+    cyc.args = SimpleNamespace(tag='0B71E65D')  # an explicit --tag is honoured
+    assert cyc.scan() == '0B71E65D'

@@ -187,18 +187,40 @@ def test_phone_home_pause_start_resume_drive_the_cycle(live_api, tmp_path, monke
     assert status['last_completed_event'] is not None
 
 
-def test_phone_scan_dispatch_in_remote_rfid_mode(live_api, tmp_path):
+def test_phone_scan_dispatch_waits_for_the_bridge_tag_then_picks_it(live_api, tmp_path):
     log = tmp_path / 'rfid.jsonl'
     t, box = run_cycle(['--api', live_api, '--remote-rfid', '--cycles', '1', '--wait-timeout', '30',
-                        '--log', str(log)])
+                        '--scan-wait', '15', '--log', str(log)])
+    wait_for(lambda: any(e['event'] == 'waiting_for_tag' for e in events(log)))
+    wait_for(lambda: httpx.get(live_api + '/api/v1/mobile/status').json()['robot_connected'])
+    press(live_api, 'scan_dispatch')
+    # the arm-mounted reader is on the tag; the Windows bridge sends what it read
+    wait_for(lambda: any(e['event'] == 'scan_waiting' for e in events(log)))
+    assert any(e.get('name') == 'label_scan' and e['vel'] == 10.0 for e in events(log))  # slow onto the reader
+    httpx.post(live_api + '/api/v1/scan-event', json={'uid': '0B71E65D'}).raise_for_status()
+    t.join(30)
+    evs = events(log)
+    assert box['rc'] == 0
+    assert any(e['event'] == 'remote_scan_queued' and e['uid'] == '0B71E65D' for e in evs)
+    names = [e.get('name') for e in evs]
+    assert names.index('label_scan_retract') < names.index('approach')  # back up before picking
+    assert any(e['event'] == 'task' and e['product'] == 'canned_meat' for e in evs)
+    assert any(e['event'] == 'cycle_ok' for e in evs)
+
+
+def test_phone_scan_dispatch_without_a_tag_queues_nothing(live_api, tmp_path):
+    log = tmp_path / 'rfid.jsonl'
+    t, box = run_cycle(['--api', live_api, '--remote-rfid', '--cycles', '1', '--wait-timeout', '6',
+                        '--scan-wait', '1', '--log', str(log)])
     wait_for(lambda: any(e['event'] == 'waiting_for_tag' for e in events(log)))
     wait_for(lambda: httpx.get(live_api + '/api/v1/mobile/status').json()['robot_connected'])
     press(live_api, 'scan_dispatch')
     t.join(30)
     evs = events(log)
-    assert box['rc'] == 0
-    assert any(e['event'] == 'remote_scan_queued' and e['uid'] == '0B71E55D' for e in evs)
-    assert any(e.get('name') == 'label_scan' for e in evs) and any(e['event'] == 'cycle_ok' for e in evs)
+    assert any(e['event'] == 'remote_scan_timeout' for e in evs)
+    assert any(e.get('name') == 'label_scan_retract' for e in evs)
+    assert not any(e['event'] in ('task', 'remote_scan_queued') for e in evs)  # no invented preset tag
+    assert httpx.get(live_api + '/api/v1/current-task').json()['task'] is None
 
 
 def test_phone_estop_while_paused_stops_the_cycle(live_api, tmp_path):

@@ -1273,7 +1273,7 @@ MOBILE_REMOTE_HTML = """<!DOCTYPE html>
     }
   }
 
-  const SCAN_SOURCES = {remote_reader: 'Windows 리더기', phone_nfc: '휴대폰 NFC', hardware: '로봇 PC 리더기', preset: '대시보드 버튼'};
+  const SCAN_SOURCES = {remote_reader: 'Windows 리더기', phone_nfc: '휴대폰 NFC', hardware: '로봇 PC 리더기', hardware_pcsc: '로봇 PC 리더기', preset: '대시보드 버튼'};
   let lastScanSeq = null;
   function renderLastScan(scan) {
     const box = document.getElementById('tagFeed');

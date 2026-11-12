@@ -1,6 +1,6 @@
 // Live "last tag read" strip: whichever source read it (Windows bridge, dashboard, phone NFC),
 // accepted or rejected. Data: GET /api/v1/last-scan.
-const SOURCES = { remote_reader: "Windows 리더기", phone_nfc: "휴대폰 NFC", hardware: "로봇 PC 리더기", preset: "대시보드 버튼" };
+const SOURCES = { remote_reader: "Windows 리더기", phone_nfc: "휴대폰 NFC", hardware: "로봇 PC 리더기", hardware_pcsc: "로봇 PC 리더기", preset: "대시보드 버튼" };
 const POLL_MS = 1000;
 
 export function describeScan(scan) {

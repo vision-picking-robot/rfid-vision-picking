@@ -68,8 +68,11 @@ def rfid_scan_and_log(body: RfidScanTrigger, request: Request):
         raise DomainError(str(exc), 422) from exc
 
     rfid_db = getattr(request.app.state, "database", None)
+    note_scan = getattr(request.app.state, "note_scan", None)  # live "last tag" on the dashboard and phone
     product = rfid_db.product(normalized) if rfid_db else None
     if product is None:
+        if note_scan:
+            note_scan(normalized, source, error="등록되지 않은 태그입니다")
         raise DomainError(f"미등록 RFID 태그입니다: {normalized}", 404)
 
     task = None
@@ -78,7 +81,12 @@ def rfid_scan_and_log(body: RfidScanTrigger, request: Request):
         try:
             task, created = enqueue_scan(rfid_db, normalized, body.quantity, str(uuid4()))
         except ValueError as exc:
+            if note_scan:
+                note_scan(normalized, source, uid=normalized, product=product, error=str(exc))
             raise DomainError(str(exc), 409) from exc
+        if note_scan:
+            note_scan(normalized, source, uid=normalized, product=product, task=task, created=created,
+                      error=None if created else "이미 대기/진행 중인 작업이 있습니다")
 
     packing = request.app.state.pipeline.packing
     with packing.store.write_transaction() as write:
