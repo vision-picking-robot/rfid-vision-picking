@@ -21,13 +21,15 @@ products:
     virtual: {x: 491.5, y: -5.0, rz: 0.0, grasp_height_from_floor: 120.0}
     grip_force: null
 
-  snack_pepero:       # DB yolo_class_name 호환 (빼빼로)
+  snack_pepero:       # DB yolo_class_name 호환 (쫀득초코칩, 3구역)
     real:
       x: 491.5        # 실물 직접 교시 좌표
       y: -5.0
       rz: 0.0
       grasp_height_from_floor: 120.0
       taught: true
+      # 빈 종이 상자라 150mA에서 찌그러짐(705까지 닫힘). 속을 채우기 전까지 약하게 잡는다.
+      grip_current_ma: 110
     virtual: {x: 491.5, y: -5.0, rz: 0.0, grasp_height_from_floor: 120.0}
     grip_force: null
 
@@ -41,12 +43,15 @@ products:
     virtual: {x: 450.0, y: 50.0, rz: 0.0, grasp_height_from_floor: 150.0}
     grip_force: null
 
-  beverage_pet:       # DB yolo_class_name 호환 (제로콜라)
+  beverage_pet:       # DB yolo_class_name 호환 (복숭아녹차 페트병, 4구역)
     real:
       x: 450.0
       y: 50.0
       rz: 0.0
       grasp_height_from_floor: 150.0
+      # 깊이 측정 시 꼭대기에서 35mm 아래(뚜껑 아래 목·어깨)를 잡는다. 20mm(기본)는 뚜껑만 잡아 빗나감(2026-11-12).
+      # 손끝~손바닥 50mm - 여유 15mm = 35mm가 최대 (depth_picking.finger_depth_mm / palm_clearance_mm).
+      top_bite_offset_mm: 35.0
       taught: true
     virtual: {x: 450.0, y: 50.0, rz: 0.0, grasp_height_from_floor: 150.0}
     grip_force: null
@@ -88,6 +93,8 @@ products:
       rz: 0.0
       grasp_height_from_floor: 30.0
       taught: true
+      # 속이 눌려도 괜찮아 조금 더 꽉 잡는다 (기본 150mA).
+      grip_current_ma: 180
     virtual: {x: 450.0, y: -150.0, rz: 0.0, grasp_height_from_floor: 30.0}
     grip_force: null
 

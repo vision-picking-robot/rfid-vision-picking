@@ -162,6 +162,25 @@
     "gripper_max_open_mm": 100.0,
     "max_height_mm": 300.0,
     "gripper_close_yaw_at_rz0_deg": 0.0,
-    "note": "one product near each calibration corner. Fingers close along BASE X (robot front-back) at rz 0 (operator-confirmed 2026-11-11), so rz turns them onto each object's short side."
+    "note": "one product near each calibration corner. Fingers close along BASE X (robot front-back) at rz 0 (operator-confirmed 2026-11-11), so rz turns them onto each object's short side.",
+    "finger_depth_mm": 50.0,
+    "palm_clearance_mm": 15.0,
+    "finger_note": "fingertip to the gripper palm is 50 mm (measured 2026-11-12); a grasp never goes deeper than finger_depth - palm_clearance below the measured top, so the palm cannot press on the object.",
+    "base_correction": {
+      "affine": [
+        [
+          1.0928,
+          0.0291,
+          -60.0659
+        ],
+        [
+          0.0009,
+          0.9839,
+          7.0494
+        ]
+      ],
+      "note": "2026-11-12: depth-camera BASE x,y -> hand-taught fingertip at the object centre, 7 points over the work area (state/xy_check_2026-11-12.json[l]). x' = a*x + b*y + c, y' = d*x + e*y + f. Leave-one-out error 10.7 -> 5.8 mm mean, 19.1 -> 10.2 mm max. Re-measure after moving the camera or redoing the 4-corner calibration.",
+      "max_shift_mm": 30.0
+    }
   }
 }

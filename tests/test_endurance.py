@@ -53,8 +53,9 @@ def test_project_cycle_mock_applies_tcp_offset(tmp_path):
     descend = next(r for r in records if r.get('name') == 'descend')
     assert descend['tcp'][2] == 120.0
     steps = {r['name']: r for r in records if r['event'] == 'step'}
-    assert steps['lift']['tcp'][2] == 370.0 and steps['home_carry']['tcp'][2] == 385.0
-    assert steps['box_place']['tcp'][2] == 185.0 and steps['box_retreat']['tcp'][2] == 385.0
+    # poses.yaml has taught via_point/box_high/box slot 1: used as-is, no home_carry, no +100 mm.
+    assert steps['lift']['tcp'][2] == 370.0 and 'home_carry' not in steps
+    assert steps['box_place']['tcp'] == [-368.5, 5.0, 234.9] and steps['box_retreat']['tcp'] == [-372.4, 287.3, 423.9]
     assert [r['event'] for r in records].count('cycle_ok') == 1
 
 
@@ -64,3 +65,20 @@ def test_remote_rfid_requires_api():
     spec2.loader.exec_module(cycle)
     with pytest.raises(SystemExit):
         cycle.main(['--remote-rfid'])
+
+
+def test_project_cycle_moves_faster_when_empty_than_when_holding(tmp_path):
+    spec2 = importlib.util.spec_from_file_location('project_cycle', ROOT / 'scripts/project_cycle.py')
+    cycle = importlib.util.module_from_spec(spec2)
+    spec2.loader.exec_module(cycle)
+    log = tmp_path / 'pc.jsonl'
+    assert cycle.main(['--cycles', '1', '--log', str(log)]) == 0
+    steps = {r['name']: r for r in (json.loads(line) for line in log.read_text().splitlines()) if r['event'] == 'step'}
+    # defaults: jvel 10, lvel 30, dvel 15; empty x1.5, from the descend to the release x1.25
+    assert steps['approach']['vel'] == 45.0 and steps['home_after_scan']['vel'] == 15.0
+    assert steps['descend']['vel'] == 18.8 and steps['lift']['vel'] == 37.5
+    assert steps['via_carry']['vel'] == 12.5 and steps['box_place']['vel'] == 18.8
+    assert steps['box_retreat']['vel'] == 45.0 and steps['via_return']['vel'] == 15.0
+    # going to the tag: travel at the empty speed, the last descent onto the reader slow and unscaled
+    assert steps['label_scan_approach']['vel'] == 15.0 and steps['label_scan']['vel'] == 10.0
+    assert steps['label_scan_retract']['vel'] == 45.0

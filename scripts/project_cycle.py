@@ -48,6 +48,10 @@ REACH_STEP_MM = 10.0
 # above its bottom. A taller held object hangs further below the fingertip (a bottle grasped at
 # 152 mm hit the box at the same height), so raise the place height by the extra hang.
 PLACE_REF_HANG_MM = 120.0
+# Same proven case as a floor for the held object's bottom (85 + 100 - 120 mm), used when the release
+# point itself is taught (poses.box_high taught): release at the taught z, raised only if a long object
+# would hang below this.
+PLACE_MIN_BOTTOM_MM = 65.0
 
 
 class Logger:
@@ -419,8 +423,24 @@ class Cycle:
         self.mover = SafeMover(self.z_min, FlangeOffset(raw, self.offset), poses['motion']['max_vel'],
                                poses['motion']['max_acc'], logger=log)
         log('tcp_offset', flange_minus_taught_z=round(dz, 2), applied_offset=self.offset, z_min=self.z_min)
-        # Carry height: transfer poses raised by --lift-extra so the held object clears the box wall.
         P = poses['poses']
+        # Taught carry: via_point, box_high and the box slot are hand-taught at their real heights.
+        self.taught_carry = bool((P.get('box_high') or {}).get('taught'))
+        if self.taught_carry:
+            self.carry = {}
+            tcp = FlangeOffset(raw, self.offset)
+            for name in ('via_point', 'box_high'):
+                pose = tcp.fkin(P[name]['posj'], DR_BASE)
+                if pose is None or max(abs(pose[i] - P[name]['posx'][i]) for i in range(3)) > POS_TOL:
+                    raise RuntimeError(f'Taught {name} posx does not match fkin(posj)')
+                if pose[2] < self.z_min:
+                    raise RuntimeError(f'Taught {name} is below the floor limit')
+                self.carry[name] = list(P[name]['posj'])
+            log('carry_poses', taught=True, posj=self.carry,
+                tcp={k: P[k]['posx'][:3] for k in self.carry}, box_slot_1=poses['box_slots'][1]['posx'][:3])
+            self._init_vision(args, log)
+            return
+        # Carry height: transfer poses raised by --lift-extra so the held object clears the box wall.
         box_hi = [P['home']['posj'][0] + 180.0, *P['home']['posj'][1:]]
         self.carry = {}
         for name, posj in (('home', P['home']['posj']), ('via_point', P['via_point']['posj']), ('box_high', box_hi)):
@@ -436,6 +456,9 @@ class Cycle:
         log('carry_poses', lift_extra=args.lift_extra, place_extra=args.place_extra,
             carry_z=round(P['home']['posx'][2] + args.lift_extra, 1),
             posj={k: [round(v, 2) for v in val] for k, val in self.carry.items()})
+        self._init_vision(args, log)
+
+    def _init_vision(self, args, log):
         cfg_path = Path(getattr(args, 'picking_config', None) or (ROOT / 'config/integration.json'))
         self.plane = None
         self.cal_revision = None
@@ -464,21 +487,28 @@ class Cycle:
         if self.estop is not None:
             self.estop.check()
 
+    def speed(self):
+        """Speed factor: --load-speed while grasping, holding or placing, --empty-speed otherwise."""
+        loaded = getattr(self, '_loaded', False)
+        return float(getattr(self.args, 'load_speed' if loaded else 'empty_speed', 1.0) or 1.0)
+
     def j(self, name, posj):
         self._estop_check()
         t0 = time.monotonic()
-        self.mover.movej(posj, self.args.jvel, self.args.jvel)
+        jvel = self.args.jvel * self.speed()
+        self.mover.movej(posj, jvel, jvel)
         self._estop_check()
         cur = self.raw.get_current_posj()
         err = max(abs(a - b) for a, b in zip(cur, posj))
         if err > JOINT_TOL:
             raise RuntimeError(f'{name}: joint arrival error {err:.2f} deg')
-        self.log('step', name=name, kind='movej', seconds=round(time.monotonic() - t0, 1))
+        self.log('step', name=name, kind='movej', vel=round(jvel, 1), seconds=round(time.monotonic() - t0, 1))
 
-    def l(self, name, pose, vel=None, tol=POS_TOL):
+    def l(self, name, pose, vel=None, tol=POS_TOL, scaled=True):
         self._estop_check()
         t0 = time.monotonic()
-        self.mover.movel(pose, vel or self.args.lvel, vel or self.args.lvel, DR_BASE)
+        vel = (vel or self.args.lvel) * (self.speed() if scaled else 1.0)
+        self.mover.movel(pose, vel, vel, DR_BASE)
         self._estop_check()
         cur = FlangeOffset(self.raw, self.offset).get_current_posx(DR_BASE)
         err = max(abs(a - b) for a, b in zip(cur[:3], pose[:3]))
@@ -486,7 +516,7 @@ class Cycle:
             raise RuntimeError(f'{name}: TCP arrival error {err:.1f} mm')
         if err > POS_TOL:
             self.log('arrival_offset', name=name, error_mm=round(err, 1), tolerance_mm=tol)
-        self.log('step', name=name, kind='movel', tcp=[round(v, 1) for v in cur[:3]],
+        self.log('step', name=name, kind='movel', tcp=[round(v, 1) for v in cur[:3]], vel=round(vel, 1),
                  seconds=round(time.monotonic() - t0, 1))
 
     def grip(self, name, target, ok, current=None, settle_s=0.0):
@@ -516,7 +546,9 @@ class Cycle:
         self.j('home', P['home']['posj'])
         self.j('label_scan_approach', P['label_scan_approach']['posj'])
         scan_hi = P['label_scan_approach']['posx']
-        self.l('label_scan', [*scan_hi[:2], P['label_scan']['posx'][2], *scan_hi[3:]], self.args.dvel)
+        # Last stretch onto the tag: slow and unscaled so the reader settles on it without a knock.
+        self.l('label_scan', [*scan_hi[:2], P['label_scan']['posx'][2], *scan_hi[3:]],
+               getattr(self.args, 'scan_vel', 10.0), scaled=False)
 
     def scan(self):
         P = self.poses['poses']
@@ -525,6 +557,20 @@ class Cycle:
         self.l('label_scan_retract', P['label_scan_approach']['posx'])
         self.j('home_after_scan', P['home']['posj'])
         return uid
+
+    def correct_base(self, base):
+        """Depth-camera BASE x,y -> measured robot x,y (depth_picking.base_correction, hand-taught points)."""
+        corr = self.depth_cfg.get('base_correction')
+        if not corr:
+            return [float(base[0]), float(base[1])]
+        (a, b, c), (d, e, f) = corr['affine']
+        x, y = float(base[0]), float(base[1])
+        cx, cy = a * x + b * y + c, d * x + e * y + f
+        limit = float(corr.get('max_shift_mm', 30.0))
+        if math.hypot(cx - x, cy - y) > limit:
+            raise RuntimeError(f'base correction moves ({x:.0f}, {y:.0f}) by more than {limit:.0f} mm; '
+                               'the object is outside the corrected area or the correction is stale')
+        return [round(cx, 1), round(cy, 1)]
 
     def detect_by_depth(self, product):
         """Locate `product` with the depth camera: the object in its corner zone of the work area."""
@@ -564,15 +610,25 @@ class Cycle:
         measured_item = dict(item, grasp_height_from_floor=obj['height_mm'], min_safe_height_from_floor=15.0)
         grasp_info = compute_safe_grasp_z(self.poses['floor']['floor_z'], self.z_min, measured_item,
                                           measured_height_mm=obj['height_mm'])
-        if grasp_info['grasp_z_mm'] >= self.poses['floor']['floor_z'] + obj['height_mm']:
+        top_z = self.poses['floor']['floor_z'] + obj['height_mm']
+        # The palm sits finger_depth above the fingertip: never bite so deep that it presses on the top.
+        finger = self.depth_cfg.get('finger_depth_mm')
+        if finger is not None:
+            max_bite = float(finger) - float(self.depth_cfg.get('palm_clearance_mm', 15.0))
+            if top_z - grasp_info['grasp_z_mm'] > max_bite:
+                self.log('grasp_bite_limited', product=product, wanted_z=grasp_info['grasp_z_mm'],
+                         z=round(top_z - max_bite, 2), max_bite_mm=max_bite)
+                grasp_info = dict(grasp_info, grasp_z_mm=round(top_z - max_bite, 2),
+                                  height_from_floor_mm=round(obj['height_mm'] - max_bite, 2))
+        if grasp_info['grasp_z_mm'] >= top_z:
             raise RuntimeError(f"grasp height {grasp_info['grasp_z_mm']} mm is not below the object top")
         close0 = self.depth_cfg.get('gripper_close_yaw_at_rz0_deg')
         if close0 is None or obj.get('short_axis_yaw_deg') is None:
             rz = item.get('rz', 0.0)
         else:  # fingers close along base yaw (close0 - rz) for tool orientation (0, 180, rz)
             rz = (float(close0) - obj['short_axis_yaw_deg'] + 90.0) % 180.0 - 90.0
-        x, y = obj['base']
-        self.log('vision', source=f'depth camera zone {zone}', product=product, base=[x, y],
+        x, y = self.correct_base(obj['base'])
+        self.log('vision', source=f'depth camera zone {zone}', product=product, base=[x, y], camera_base=obj['base'],
                  height_mm=obj['height_mm'], footprint_mm=obj.get('footprint_mm'),
                  short_axis_yaw=obj.get('short_axis_yaw_deg'), rz=round(rz, 1), grasp_z=grasp_info['grasp_z_mm'])
         remote = getattr(self, 'estop', None)
@@ -651,30 +707,68 @@ class Cycle:
         self._above = [*grasp[:2], above_z, *grasp[3:]]
         self._product = target['product']
         self.grip('gripper_open', 0, lambda p: p <= OPEN_MAX)
+        if getattr(self, 'taught_carry', False):
+            # Mirror of pull_in: a low approach on the far side would otherwise be a long descending
+            # line from the via_point over the other zones. Arrive at the via height on the same
+            # radial line first, then go out and down to the approach point.
+            pre = self._inward_at_carry('pre_approach', self._approach)
+            if pre is not None:
+                self.l('pre_approach', pre, tol=WAYPOINT_TOL)
         grid_info = target.get('grid_cell') if isinstance(target, dict) else None
         if grid_info is not None:
             cell_xy = grid_info['cell_center_base_mm'][:2]
             self._grid_approach = [cell_xy[0], cell_xy[1], approach_z, *grasp[3:]]
             self.l('grid_coarse_approach', self._grid_approach, tol=WAYPOINT_TOL)
         self.l('approach', self._approach, tol=WAYPOINT_TOL)
+        self._loaded = True  # descend, grasp, carry and place at --load-speed
         self.l('descend', grasp, self.args.dvel)
 
     def grip_object(self):
-        limit = getattr(self.args, 'grip_current', 150)
+        item = (self.products.get(getattr(self, '_product', None)) or {}).get('real') or {}
+        limit = int(item.get('grip_current_ma') or getattr(self.args, 'grip_current', 150))
         closed = self.grip('grip', 740, lambda p: p >= 0, current=limit, settle_s=4.0)
         # Empty close reaches ~739 at low current; an object stalls the fingers earlier, or (thin
         # or soft packs) near full close with the current pinned at the limit.
         self.holding = closed['position_pulses'] < 700 or (
             closed['position_pulses'] < 735 and closed['current'] >= 0.8 * limit)
         self.log('grasp', product=self._product, holding=self.holding, position=closed['position_pulses'],
-                 current=closed['current'], note='object detected' if self.holding else 'empty close (no object)')
+                 current=closed['current'], current_limit=limit, note='object detected' if self.holding else 'empty close (no object)')
         if self.args.require_object and not self.holding:
             raise RuntimeError('No object in the gripper (empty close)')
 
     def retract(self):
         self.l('lift', self._above, tol=WAYPOINT_TOL)
+        if self.taught_carry:
+            self._pull_in()
+            return  # place() goes on to the taught via_point
         home = self.poses['poses']['home']['posx']
         self.l('home_carry', [home[0], home[1], home[2] + self.args.lift_extra, *home[3:]])
+
+    def _inward_at_carry(self, name, pose):
+        """Point on the line from the robot to `pose` (same orientation) at the via_point height that the
+        arm reaches comfortably, or None when `pose` is already at or above that height."""
+        carry_z = self.poses['poses']['via_point']['posx'][2]
+        if pose[2] >= carry_z - POS_TOL:
+            return None
+        elbow_deg = getattr(self.raw, 'elbow_deg', None)
+        for scale in [1.0 - 0.05 * i for i in range(11)]:  # down to half the radius
+            target = [pose[0] * scale, pose[1] * scale, carry_z, *pose[3:6]]
+            if elbow_deg is None:
+                return target
+            elbow = elbow_deg([*target[:2], carry_z + self.offset, *target[3:6]])
+            if elbow is not None and abs(elbow) >= ELBOW_MIN_DEG:
+                return target
+        raise RuntimeError(f'{name}: cannot reach {carry_z:.0f} mm even at half the radius')
+
+    def _pull_in(self):
+        """Far side of the table: the stretched arm cannot lift to the via_point height there, and a
+        joint move from that low lift would sweep the held object over the neighbouring zones. Pull the
+        object straight in toward the robot while rising until the via_point height is reachable."""
+        target = self._inward_at_carry('pull_in', self._above)
+        if target is None:
+            return
+        self.log('pull_in', from_tcp=[round(v, 1) for v in self._above[:3]], to_tcp=[round(v, 1) for v in target[:3]])
+        self.l('pull_in', target, tol=WAYPOINT_TOL)
 
     def place(self, box_id=1):
         P, up = self.poses['poses'], self.poses['motion']['approach_offset_z']
@@ -685,11 +779,24 @@ class Cycle:
         slot_pose = self.poses['box_slots'][slot]['posx']
         self.j('via_carry', self.carry['via_point'])
         self.j('box_carry', self.carry['box_high'])
+        if self.taught_carry:
+            hang = getattr(self, '_hang', 0.0)
+            extra = max(0.0, PLACE_MIN_BOTTOM_MM - (slot_pose[2] - hang))
+            if extra:
+                self.log('place_raised', hang_mm=round(hang, 1), extra_mm=round(extra, 1))
+            self.l('box_place', [*slot_pose[:2], slot_pose[2] + extra, *slot_pose[3:]], self.args.dvel)
+            self.grip('release', 0, lambda p: p <= OPEN_MAX)
+            self._loaded = False  # empty again
+            self.l('box_retreat', P['box_high']['posx'])
+            self.j('via_return', self.carry['via_point'])
+            self.last_slot = slot
+            return
         extra = max(0.0, getattr(self, '_hang', 0.0) - PLACE_REF_HANG_MM)
         if extra:
             self.log('place_raised', hang_mm=round(self._hang, 1), extra_mm=round(extra, 1))
         self.l('box_place', [*slot_pose[:2], slot_pose[2] + self.args.place_extra + extra, *slot_pose[3:]], self.args.dvel)
         self.grip('release', 0, lambda p: p <= OPEN_MAX)
+        self._loaded = False
         carry_z = P['home']['posx'][2] + self.args.lift_extra
         self.l('box_retreat', [*slot_pose[:2], carry_z, *slot_pose[3:]])
         self.j('via_return', self.carry['via_point'])
@@ -874,6 +981,12 @@ def main(argv=None):
                         'e.g. http://127.0.0.1:8000 (needs --picking-config with depth_picking.zones)')
     parser.add_argument('--grip-current', type=int, default=150,
                         help='gripper goal current in mA for the grasp (force limit; was 400, which crushed snack boxes)')
+    parser.add_argument('--empty-speed', type=float, default=1.5,
+                        help='speed factor (x jvel/lvel/dvel) while the gripper is empty')
+    parser.add_argument('--load-speed', type=float, default=1.25,
+                        help='speed factor from the descend to the grasp until the release (holding the object)')
+    parser.add_argument('--scan-vel', type=float, default=10.0,
+                        help='mm/s for the final descent onto the tag reader position (not scaled by --empty-speed)')
     parser.add_argument('--require-object', action='store_true', help='fail when the gripper closes empty')
     parser.add_argument('--remote-rfid', action='store_true',
                         help='with --api: wait for tasks queued by another PC (POST /api/v1/scan-event) instead of scanning')

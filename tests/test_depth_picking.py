@@ -179,6 +179,7 @@ def test_place_height_rises_for_objects_hanging_below_the_reference(hang, place_
     cyc.poses = {'box_slots': {1: {'posx': [-373.0, 0.0, 85.0, 3.26, 180.0, -176.74], 'taught': True}},
                  'poses': {'home': {'posx': [373.0, 0.0, 285.0, 0, 180, 0]}}, 'motion': {'approach_offset_z': 150.0}}
     cyc.carry = {'via_point': [90, 0, 0, 0, 0, 0], 'box_high': [180, 0, 0, 0, 0, 0]}
+    cyc.taught_carry = False  # legacy: release --place-extra above the slot
     cyc.args = SimpleNamespace(place_extra=100.0, lift_extra=100.0, dvel=15.0)
     cyc.log = lambda event, **kw: None
     cyc.j = lambda name, posj: None
@@ -187,3 +188,107 @@ def test_place_height_rises_for_objects_hanging_below_the_reference(hang, place_
     cyc._hang = hang
     cyc.place('BOX-01')
     assert dict(moves)['box_place'] == pytest.approx(place_z)
+
+
+@pytest.mark.parametrize('hang, place_z', [(32.0, 234.9), (152.2, 234.9), (200.0, 265.0)])
+def test_taught_release_point_is_used_as_is_unless_the_object_hangs_too_low(hang, place_z):
+    cyc = object.__new__(project_cycle.Cycle)
+    moves, joints = [], []
+    box_high = [-372.4, 287.3, 423.9, -9.36, 180.0, 162.96]
+    cyc.poses = {'box_slots': {1: {'posx': [-368.5, 5.0, 234.9, 42.75, 180.0, -144.55], 'taught': True}},
+                 'poses': {'home': {'posx': [373.0, 0.0, 285.0, 0, 180, 0]}, 'box_high': {'posx': box_high}},
+                 'motion': {'approach_offset_z': 150.0}}
+    cyc.carry = {'via_point': [112, 0, 0, 0, 0, 0], 'box_high': [142, 0, 0, 0, 0, 0]}
+    cyc.taught_carry = True
+    cyc.args = SimpleNamespace(place_extra=100.0, lift_extra=100.0, dvel=15.0)
+    cyc.log = lambda event, **kw: None
+    cyc.j = lambda name, posj: joints.append(name)
+    cyc.l = lambda name, pose, vel=None, tol=None: moves.append((name, list(pose)))
+    cyc.grip = lambda *a, **k: {}
+    cyc._hang = hang
+    cyc.place('BOX-01')
+    assert joints == ['via_carry', 'box_carry', 'via_return']
+    assert [m[0] for m in moves] == ['box_place', 'box_retreat']
+    assert moves[0][1][2] == pytest.approx(place_z)  # object bottom never below PLACE_MIN_BOTTOM_MM
+    assert moves[1][1] == box_high  # back up the way it came, then via_point
+
+
+def test_low_lift_on_the_far_side_is_pulled_in_and_raised_to_the_via_height():
+    cyc = object.__new__(project_cycle.Cycle)
+    moves, logged = [], []
+    cyc.poses = {'poses': {'via_point': {'posx': [-136.8, 334.4, 250.1, 155.37, 180.0, 1.78]}}}
+    cyc.offset = 120.0
+    # elbow comfortable only once the radius is <= 640 mm
+    cyc.raw = SimpleNamespace(elbow_deg=lambda p: 30.0 if (p[0] ** 2 + p[1] ** 2) ** 0.5 <= 640 else 10.0)
+    cyc.log = lambda event, **kw: logged.append(event)
+    cyc.l = lambda name, pose, vel=None, tol=None: moves.append((name, list(pose)))
+    cyc._above = [687.8, -76.1, 152.2, 0.0, 180.0, 0.0]
+    cyc._pull_in()
+    name, pose = moves[0]
+    assert name == 'pull_in' and pose[2] == 250.1 and (pose[0] ** 2 + pose[1] ** 2) ** 0.5 <= 640
+    moves.clear()
+    cyc._above = [481.0, 202.5, 402.4, 0.0, 180.0, 0.0]  # already above the via height: no extra move
+    cyc._pull_in()
+    assert moves == []
+
+
+def test_depth_grasp_never_lets_the_palm_reach_the_object_top(monkeypatch):
+    cyc = object.__new__(project_cycle.Cycle)
+    logged = []
+    cyc.depth_cfg = {'zones': {'4': 'beverage_pet'}, 'samples': 1, 'finger_depth_mm': 50.0, 'palm_clearance_mm': 15.0}
+    cyc.args = SimpleNamespace(depth_api='http://web', product='snack_pepero')
+    cyc.cal_revision = 'r1'
+    cyc.poses = {'floor': {'floor_z': 0.0}}
+    cyc.z_min = 10.0
+    cyc.log = lambda event, **kw: logged.append((event, kw))
+    obj = {'corner': 4, 'inside': True, 'base': [481.0, 202.0], 'height_mm': 173.5, 'footprint_mm': [24.0, 33.0],
+           'short_axis_yaw_deg': 90.0}
+
+    class Resp:
+        def raise_for_status(self):
+            return self
+
+        def json(self):
+            return {'revision': 'r1', 'objects': [obj]}
+    monkeypatch.setattr('httpx.get', lambda url, timeout: Resp())
+    cyc.products = {'beverage_pet': {'real': {'top_bite_offset_mm': 35.0}}}
+    assert cyc.detect_by_depth('beverage_pet')['pose'][2] == pytest.approx(173.5 - 35.0)
+    cyc.products = {'beverage_pet': {'real': {'top_bite_offset_mm': 60.0}}}  # deeper than 50 - 15: clamped
+    assert cyc.detect_by_depth('beverage_pet')['pose'][2] == pytest.approx(173.5 - 35.0)
+    assert any(e == 'grasp_bite_limited' for e, _ in logged)
+
+
+def test_depth_base_correction_maps_camera_xy_to_the_taught_fingertip():
+    import json
+    cyc = object.__new__(project_cycle.Cycle)
+    cfg = json.loads((Path(__file__).resolve().parents[1] / 'config/integration.real.json').read_text(encoding='utf-8'))
+    cyc.depth_cfg = cfg['depth_picking']
+    # measured 2026-11-12: camera (575.9, 65.3) -> fingertip (569.2, 70.8), camera (656.2, -84.8) -> (656.1, -77.0)
+    for cam, real in (([575.9, 65.3], [569.2, 70.8]), ([656.2, -84.8], [656.1, -77.0])):
+        x, y = cyc.correct_base(cam)
+        assert abs(x - real[0]) < 6 and abs(y - real[1]) < 6
+    with pytest.raises(RuntimeError, match='more than'):
+        cyc.correct_base([1500.0, 0.0])  # far outside the measured area: refuse instead of extrapolating
+    cyc.depth_cfg = {}
+    assert cyc.correct_base([1.0, 2.0]) == [1.0, 2.0]
+
+
+def test_low_far_approach_first_arrives_at_the_via_height_on_the_same_radial_line():
+    cyc = object.__new__(project_cycle.Cycle)
+    moves = []
+    cyc.poses = {'poses': {'via_point': {'posx': [-136.8, 334.4, 250.1, 155.37, 180.0, 1.78]}},
+                 'motion': {'approach_offset_z': 150.0}, 'floor': {'floor_z': 0.0}}
+    cyc.offset, cyc.taught_carry = 120.0, True
+    cyc.args = SimpleNamespace(lift_extra=100.0, dvel=15.0)
+    # comfortable only within 620 mm and below 140 mm at the far target: the approach ends low
+    cyc.raw = SimpleNamespace(elbow_deg=lambda p: 30.0 if (p[0] ** 2 + p[1] ** 2) ** 0.5 <= 620 or p[2] - 120 <= 140 else 10.0)
+    cyc.log = lambda event, **kw: None
+    cyc.l = lambda name, pose, vel=None, tol=None: moves.append((name, list(pose)))
+    cyc.grip = lambda *a, **k: {}
+    cyc.approach({'pose': [674.2, 182.4, 95.0, 0.0, 180.0, 0.0], 'product': 'snack_pepero',
+                  'grasp_info': {'measured_height_mm': 115.0}})
+    names = [m[0] for m in moves]
+    assert names == ['pre_approach', 'approach', 'descend']
+    pre, approach = moves[0][1], moves[1][1]
+    assert pre[2] == 250.1 and approach[2] < 250.1
+    assert abs(pre[0] * approach[1] - pre[1] * approach[0]) < 1e-6  # same line from the robot base
