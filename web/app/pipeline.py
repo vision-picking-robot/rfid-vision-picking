@@ -172,6 +172,10 @@ class Pipeline:
                     continue
                 start = time.monotonic_ns()
                 objects = detector.predict(packet.frame)
+                if detector.metadata.get("backend") == "mock-yolo" and not packet.simulation_only:
+                    # The mock detector's fixed boxes (snack_box, pet_bottle, can) belong to the synthetic
+                    # test video; on a real camera they would be drawn over unrelated scenery.
+                    objects = []
                 finished = time.monotonic_ns()
                 result = {
                     "schema_version": 1, "event": "detections", "session_id": self.session_id,

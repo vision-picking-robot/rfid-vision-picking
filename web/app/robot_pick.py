@@ -476,7 +476,8 @@ async def depth_objects(request: Request, min_height_mm: float = 15.0):
         obj["inside"] = bool(plane.contains(obj["pixel"]))
         if base is not None:
             obj["corner"] = 1 + min(range(4), key=lambda i: math.dist(base[:2], corners[i]))
-        rect = [plane.project(p) for p in obj.pop("footprint_px")]
+        obj["outline_px"] = obj.pop("footprint_px")  # footprint on the table, image pixels (for the live overlay)
+        rect = [plane.project(p) for p in obj["outline_px"]]
         if all(p is not None for p in rect):
             a, b, c = (r[:2] for r in rect[:3])
             sides = [(math.dist(a, b), b, a), (math.dist(b, c), c, b)]
@@ -484,7 +485,8 @@ async def depth_objects(request: Request, min_height_mm: float = 15.0):
             # Yaw (deg, BASE) of the short side: the direction the fingers should close along.
             obj["footprint_mm"] = [round(short, 1), round(long_, 1)]
             obj["short_axis_yaw_deg"] = round(math.degrees(math.atan2(s1[1] - s0[1], s1[0] - s0[0])) % 180.0, 1)
-    return {**found, "revision": calibration["revision"], "camera": camera.model_dump()}
+    return {**found, "revision": calibration["revision"], "camera": camera.model_dump(),
+            "work_area_px": [[round(float(u), 1), round(float(v), 1)] for u, v in plane.pixels]}
 
 
 @router.put("/calibration", dependencies=[Depends(local_json)])

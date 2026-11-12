@@ -205,6 +205,9 @@ def install_rfid_routes(app: FastAPI, db_path=None):
         'placed_boxes': {},
         'grid': {'rows': 15, 'cols': 15, 'active_cell': None},
         'last_completed_event': None,
+        # Most recent tag read from any source (Windows bridge, dashboard, phone NFC), accepted or not.
+        'scan_seq': 0,
+        'last_scan': None,
         'events': [],
         # Commands for the robot cycle, consumed by seq (project_cycle MobileRemote polls these).
         'command_seq': 0,
@@ -237,6 +240,31 @@ def install_rfid_routes(app: FastAPI, db_path=None):
         mobile_state['events'] = (mobile_state['events'] + [entry])[-30:]
         return entry
 
+    def note_scan(raw_uid, source, *, uid=None, product=None, task=None, created=None, error=None):
+        """Remember the latest tag read so the dashboard and the phone can show it live."""
+        mobile_state['scan_seq'] += 1
+        entry = {
+            'seq': mobile_state['scan_seq'],
+            'timestamp': datetime.now().astimezone().isoformat(),
+            'source': source,
+            'raw_uid': raw_uid,
+            'uid': uid,
+            'product_name': (product or {}).get('product_name'),
+            'target_box_id': (product or {}).get('target_box_id'),
+            'task_id': (task or {}).get('task_id'),
+            'accepted': error is None,
+            'created': created,
+            'error': error,
+        }
+        mobile_state['last_scan'] = entry
+        # Clients poll it (GET /api/v1/last-scan, /api/v1/mobile/status); the /ws scan packets are unchanged.
+        record_mobile_event('tag_scanned', **{k: v for k, v in entry.items() if k not in ('seq', 'timestamp')})
+        return entry
+
+    @app.get('/api/v1/last-scan')
+    async def last_scan():
+        return {'last_scan': mobile_state['last_scan']}
+
     @app.get('/api/v1/tags')
     async def list_tags():
         return {'tags': await asyncio.to_thread(db.products)}
@@ -261,16 +289,26 @@ def install_rfid_routes(app: FastAPI, db_path=None):
 
     @app.post('/api/v1/scan-event')
     async def scan(event: ScanEvent):
-        uid = await resolve(event.uid)
+        try:
+            uid = await resolve(event.uid)
+        except HTTPException as exc:
+            reason = {404: '등록되지 않은 태그입니다', 409: '등록되지 않은 태그입니다 (여러 태그와 일부만 일치)',
+                      422: 'UID 형식이 아닙니다 (너무 짧거나 김)'}.get(exc.status_code, str(exc.detail))
+            note_scan(event.uid, 'remote_reader', error=reason)
+            raise
+        product = await asyncio.to_thread(db.product, uid)
         try:
             task, created = await asyncio.to_thread(db.enqueue, uid, event.quantity, event.event_id)
         except KeyError as exc:
+            note_scan(event.uid, 'remote_reader', uid=uid, error='Unknown tag')
             raise HTTPException(404, 'Unknown tag') from exc
         except ValueError as exc:
+            note_scan(event.uid, 'remote_reader', uid=uid, product=product,
+                      error='이미 대기/진행 중인 작업이 있습니다' if 'active task' in str(exc) else str(exc))
             raise HTTPException(409, str(exc)) from exc
-        packet = {'type': 'scan', 'raw_uid': event.uid, 'uid': uid, 'task': task,
-                  'product': await asyncio.to_thread(db.product, uid)}
+        packet = {'type': 'scan', 'raw_uid': event.uid, 'uid': uid, 'task': task, 'product': product}
         if created:
+            note_scan(event.uid, 'remote_reader', uid=uid, product=product, task=task, created=True)
             broadcast(packet)
         return {**packet, 'created': created}
 
@@ -293,6 +331,7 @@ def install_rfid_routes(app: FastAPI, db_path=None):
         product = await asyncio.to_thread(db.product, normalized)
         packet = {'type': 'scan', 'source': source, 'uid': normalized, 'task': task, 'product': product}
         if created:
+            note_scan(normalized, source, uid=normalized, product=product, task=task, created=True)
             broadcast(packet)
         return {**packet, 'created': created}
 
@@ -486,6 +525,7 @@ def install_rfid_routes(app: FastAPI, db_path=None):
         }
         record_mobile_event('phone_nfc_tag', uid=body.uid, box_slot=body.box_slot)
         if created:
+            note_scan(body.uid, 'phone_nfc', uid=body.uid, product=product, task=task, created=True)
             broadcast(packet)
         return {'ok': True, **packet}
 

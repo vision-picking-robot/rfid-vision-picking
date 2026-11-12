@@ -468,6 +468,14 @@ MOBILE_REMOTE_HTML = """<!DOCTYPE html>
     background: var(--glass-subtle); border: 1px solid var(--border-hairline); color: var(--text-secondary);
   }
   .link-banner.ok { border-color: var(--btn-sky-border); color: var(--text-primary); }
+  .tag-feed { display: grid; gap: 4px; padding: 11px 13px; border-radius: 14px; font-size: 13px; line-height: 1.45;
+    background: var(--glass-subtle); border: 1px solid var(--border-hairline); color: var(--text-secondary); }
+  .tag-feed strong { color: var(--text-primary); font-size: 15px; }
+  .tag-feed .tag-uid { font-family: ui-monospace, monospace; letter-spacing: 0.04em; }
+  .tag-feed.ok { border-color: var(--btn-sky-border); }
+  .tag-feed.bad { border-color: rgba(180, 83, 9, 0.45); color: #B45309; }
+  .tag-feed.fresh { animation: tagPulse 1.2s ease-out 1; }
+  @keyframes tagPulse { from { box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.55); } to { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0); } }
   .link-banner.down { border-color: rgba(180, 83, 9, 0.45); color: #B45309; }
   .ctrl-btn[hidden] { display: none; }
   .ctrl-btn:disabled { opacity: 0.45; }
@@ -593,6 +601,18 @@ MOBILE_REMOTE_HTML = """<!DOCTYPE html>
     </div>
   </header>
 
+  <!-- 00. Last tag -->
+  <section class="glass-card">
+    <div class="section-head">
+      <div class="section-title-wrap">
+        <span class="section-index">00</span>
+        <h2 class="section-title">최근 인식 태그</h2>
+      </div>
+      <span class="section-meta" id="tagFeedTime">LIVE</span>
+    </div>
+    <div class="tag-feed" id="tagFeed"><span>아직 인식된 태그가 없습니다.</span></div>
+  </section>
+
   <!-- 01. Scan Mode -->
   <section class="glass-card">
     <div class="section-head">
@@ -623,7 +643,7 @@ MOBILE_REMOTE_HTML = """<!DOCTYPE html>
             <span class="slot-tag">NFC PACKET</span>
             <span class="slot-action-label">SEND</span>
           </div>
-          <div class="slot-name">빼빼로 태그 전송</div>
+          <div class="slot-name">쫀득초코칩 태그 전송</div>
           <div class="slot-uid">0B71E55D · BOX-01</div>
         </button>
         <button type="button" class="slot-card" onclick="startWebNfc()">
@@ -654,7 +674,7 @@ MOBILE_REMOTE_HTML = """<!DOCTYPE html>
           <span class="slot-tag">SLOT 01</span>
           <span class="slot-action-label">DISPATCH</span>
         </div>
-        <div class="slot-name">아몬드 빼빼로</div>
+        <div class="slot-name">쫀득초코칩</div>
         <div class="slot-uid">UID 0B71E55D</div>
       </button>
 
@@ -663,7 +683,7 @@ MOBILE_REMOTE_HTML = """<!DOCTYPE html>
           <span class="slot-tag">SLOT 02</span>
           <span class="slot-action-label">DISPATCH</span>
         </div>
-        <div class="slot-name">제로 콜라 500ml</div>
+        <div class="slot-name">복숭아녹차 (페트병)</div>
         <div class="slot-uid">UID 0B71E75D</div>
       </button>
 
@@ -1253,6 +1273,29 @@ MOBILE_REMOTE_HTML = """<!DOCTYPE html>
     }
   }
 
+  const SCAN_SOURCES = {remote_reader: 'Windows 리더기', phone_nfc: '휴대폰 NFC', hardware: '로봇 PC 리더기', preset: '대시보드 버튼'};
+  let lastScanSeq = null;
+  function renderLastScan(scan) {
+    const box = document.getElementById('tagFeed');
+    if (!scan) return;
+    const when = new Date(scan.timestamp).toLocaleTimeString('ko-KR', {hour12: false});
+    const source = SCAN_SOURCES[scan.source] || scan.source;
+    const uid = scan.uid || scan.raw_uid;
+    const title = scan.accepted ? (scan.product_name || '등록 상품') + ' → ' + (scan.target_box_id || '') : '인식 거부';
+    const detail = scan.accepted ? '작업 등록됨' : (scan.error || '등록되지 않은 태그');
+    box.replaceChildren(...[
+      ['strong', title], ['span', 'UID ' + uid, 'tag-uid'], ['span', detail + ' · ' + source]
+    ].map(([tag, text, cls]) => { const el = document.createElement(tag); el.textContent = text; if (cls) el.className = cls; return el; }));
+    box.className = 'tag-feed ' + (scan.accepted ? 'ok' : 'bad');
+    document.getElementById('tagFeedTime').textContent = when;
+    if (lastScanSeq !== null && scan.seq !== lastScanSeq) {
+      void box.offsetWidth;  // restart the highlight
+      box.classList.add('fresh');
+      showToast(scan.accepted ? `태그 인식: ${scan.product_name || uid}` : `태그 거부: ${uid}`, scan.accepted ? [60] : [60, 60, 60]);
+    }
+    lastScanSeq = scan.seq;
+  }
+
   async function pollStatus() {
     try {
       const res = await fetch('/api/v1/mobile/status', {cache: 'no-store'});
@@ -1272,6 +1315,8 @@ MOBILE_REMOTE_HTML = """<!DOCTYPE html>
         renderAreaNote();
       }
 
+      renderLastScan(data.last_scan);
+
       if (data.last_completed_event && data.last_completed_event.task_id !== lastCompletedTaskId) {
         lastCompletedTaskId = data.last_completed_event.task_id;
         showToast(`피킹 및 상자 적재 완료 (${data.last_completed_event.task_id})`, [180, 90, 220]);
@@ -1283,7 +1328,7 @@ MOBILE_REMOTE_HTML = """<!DOCTYPE html>
 
   loadWorkArea().then(loadLiveDepth);
   pollStatus();
-  setInterval(pollStatus, 1500);
+  setInterval(pollStatus, 1000);
   setInterval(loadLiveDepth, 3000);
 </script>
 </body>

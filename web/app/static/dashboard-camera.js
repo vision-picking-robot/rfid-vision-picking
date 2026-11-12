@@ -1,5 +1,7 @@
 import { watchDetections } from "./detection-feed.js";
 import { connectCameraPick } from "./camera-pick.js";
+import { connectDepthOverlay } from "./depth-overlay.js";
+import { connectTagFeed } from "./tag-feed.js";
 
 function createClassSummary(fields, getStation) {
   const buttons = new Map();
@@ -200,6 +202,8 @@ export function connectDashboardCamera(panel, getStation) {
   const classes = createClassSummary(fields, getStation);
   const source = cameraSource(fields);
   const pick = connectCameraPick(panel);
+  const stopDepth = connectDepthOverlay(fields.depth, fields.image);
+  const stopTags = connectTagFeed(fields.tagFeed);
   let stop, disposed = false;
   let displayMode = "detections";
 
@@ -275,6 +279,8 @@ export function connectDashboardCamera(panel, getStation) {
     fields.mode.removeEventListener("change", modeChanged);
     source.dispose();
     stop();
+    stopDepth();
+    stopTags();
     pick.dispose();
     classes.dispose();
   };
