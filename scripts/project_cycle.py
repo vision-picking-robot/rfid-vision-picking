@@ -264,48 +264,102 @@ def verified_real_calibration(cfg):
             and 'mock' not in revision and 'mock' not in camera and len(cal.get('corners') or []) == 4)
 
 
-class MobileEStopWatch(threading.Thread):
-    """Polls the dashboard's mobile E-stop flag and sends move_stop the moment it is set.
+class MobileRemote(threading.Thread):
+    """Carries out the Galaxy remote's buttons on the robot.
 
-    The phone button only flips a flag in the web process; this thread is what turns it into a
-    real robot stop. It is not a substitute for the pendant E-Stop.
+    The phone only changes state in the web process (POST /api/v1/mobile/control). This thread polls
+    GET /api/v1/mobile/status?robot=<mode> (which is also the heartbeat the phone shows as "로봇 연결"):
+      - emergency_stop -> move_stop at once, then every later step raises.
+      - pause / resume -> the cycle holds before its next step (a running move finishes first).
+      - start, scan_dispatch, home, box_placed -> queued; the main loop runs them while idle.
+    It is not a substitute for the pendant E-Stop.
     """
 
-    def __init__(self, api, stop_fn, log, period=0.3):
+    QUEUED = ('start', 'scan_dispatch', 'home', 'box_placed')
+
+    def __init__(self, api, stop_fn, log, period=0.3, mode='cycle'):
         super().__init__(daemon=True)
-        self.url = api.rstrip('/') + '/api/v1/mobile/status'
+        self.api = api.rstrip('/')
+        self.url = f'{self.api}/api/v1/mobile/status'
+        self.mode = mode
         self.stop_fn, self.log, self.period = stop_fn, log, period
         self.tripped = threading.Event()
+        self.paused = threading.Event()
         self.alive = threading.Event()
         self.alive.set()
         self.available = True
+        self.busy = False
+        self.last_seq = None
+        self._commands = []
+        self._lock = threading.Lock()
 
     def poll(self):
+        """Status dict, or None when the web has no mobile API."""
         import httpx
-        r = httpx.get(self.url, timeout=2)
+        r = httpx.get(self.url, params={'robot': self.mode}, timeout=2)
         if r.status_code == 404:
             return None
         r.raise_for_status()
-        return bool(r.json().get('emergency_stopped'))
+        return r.json()
+
+    def report(self, state, message=None, ack=None, result=None):
+        """Tell the phone what the robot is doing (best effort; never raises)."""
+        import httpx
+        body = {'mode': self.mode, 'state': state, 'message': message}
+        if ack is not None:
+            body.update(ack_seq=int(ack), ack_result=result or 'done')
+        try:
+            httpx.post(f'{self.api}/api/v1/mobile/robot-state', json=body, timeout=2)
+        except Exception as error:  # noqa: BLE001
+            self.log('remote_report_failed', message=str(error))
+
+    def apply(self, status):
+        """Update pause/E-stop flags and queue new commands from one status poll."""
+        if isinstance(status, bool):  # legacy poll result: E-stop flag only
+            status = {'emergency_stopped': status}
+        if status.get('emergency_stopped') and not self.tripped.is_set():
+            self.tripped.set()
+            self.log('mobile_emergency_stop', action='move_stop')
+            try:
+                self.stop_fn()
+                self.log('move_stop_sent', source='mobile_estop')
+            except Exception as error:  # noqa: BLE001
+                self.log('move_stop_failed', source='mobile_estop', message=str(error))
+        if status.get('paused') and not status.get('emergency_stopped'):
+            self.paused.set()
+        else:
+            self.paused.clear()
+        commands = status.get('commands') or []
+        if self.last_seq is None:
+            # Commands pressed before this cycle started are stale: never act on them.
+            self.last_seq = int(status.get('command_seq') or 0)
+            return
+        fresh = [c for c in commands if c.get('seq', 0) > self.last_seq]
+        if fresh:
+            self.last_seq = max(c['seq'] for c in fresh)
+        for c in fresh:
+            name = c.get('command')
+            self.log('remote_command', seq=c['seq'], command=name, busy=self.busy)
+            if name not in self.QUEUED:
+                continue  # pause/resume/emergency_stop/reset_stop act through the flags above
+            if self.busy:
+                self.report('BUSY', f'사이클 진행 중이라 {name} 명령을 건너뜁니다.', ack=c['seq'], result='ignored')
+                continue
+            with self._lock:
+                self._commands.append(c)
 
     def run(self):
         warned = False
         while self.alive.is_set() and not self.tripped.is_set():
             try:
-                state = self.poll()
-                if state is None:
+                status = self.poll()
+                if status is None:
                     self.available = False
                     self.log('estop_watch_unavailable', url=self.url)
                     return
                 warned = False
-                if state:
-                    self.tripped.set()
-                    self.log('mobile_emergency_stop', action='move_stop')
-                    try:
-                        self.stop_fn()
-                        self.log('move_stop_sent', source='mobile_estop')
-                    except Exception as error:  # noqa: BLE001
-                        self.log('move_stop_failed', source='mobile_estop', message=str(error))
+                self.apply(status)
+                if self.tripped.is_set():
                     return
             except Exception as error:  # noqa: BLE001
                 if not warned:
@@ -313,9 +367,39 @@ class MobileEStopWatch(threading.Thread):
                     warned = True
             time.sleep(self.period)
 
+    def take(self, wanted):
+        """Pop the oldest queued command whose name is in `wanted` (others stay queued)."""
+        with self._lock:
+            for i, c in enumerate(self._commands):
+                if c.get('command') in wanted:
+                    return self._commands.pop(i)
+        return None
+
+    def post_items(self, items, revision=None):
+        """Show depth-camera sightings on the phone's work-area map (best effort)."""
+        import httpx
+        try:
+            httpx.post(f'{self.api}/api/v1/mobile/work-items',
+                       json={'source': 'robot_cycle', 'revision': revision, 'items': items}, timeout=2)
+        except Exception as error:  # noqa: BLE001
+            self.log('remote_items_failed', message=str(error))
+
     def check(self):
+        """Called before/after every motion step: raise on E-stop, hold while paused."""
         if self.tripped.is_set():
             raise RuntimeError('Mobile emergency stop pressed: motion stopped (reset_stop on the phone before restarting)')
+        if self.paused.is_set():
+            self.log('remote_paused')
+            self.report('PAUSED', '일시정지됨 — 다음 동작 전에 대기 중입니다.')
+            while self.paused.is_set() and not self.tripped.is_set():
+                time.sleep(self.period / 2)
+            if self.tripped.is_set():
+                raise RuntimeError('Mobile emergency stop pressed while paused')
+            self.log('remote_resumed')
+            self.report('RUNNING', '재개 — 사이클을 계속합니다.')
+
+
+MobileEStopWatch = MobileRemote  # old name used by earlier scripts/tests
 
 
 class Cycle:
@@ -491,6 +575,14 @@ class Cycle:
         self.log('vision', source=f'depth camera zone {zone}', product=product, base=[x, y],
                  height_mm=obj['height_mm'], footprint_mm=obj.get('footprint_mm'),
                  short_axis_yaw=obj.get('short_axis_yaw_deg'), rz=round(rz, 1), grasp_z=grasp_info['grasp_z_mm'])
+        remote = getattr(self, 'estop', None)
+        if remote is not None and hasattr(remote, 'post_items'):
+            item = {'zone': zone, 'product': product, 'base': [x, y], 'height_mm': obj['height_mm']}
+            if obj.get('footprint_mm'):
+                item['footprint_mm'] = obj['footprint_mm']
+            if obj.get('short_axis_yaw_deg') is not None:
+                item['short_axis_yaw_deg'] = obj['short_axis_yaw_deg']
+            remote.post_items([item], getattr(self, 'cal_revision', None))
         return dict(product=product, pose=[x, y, grasp_info['grasp_z_mm'], 0.0, 180.0, rz],
                     grid_cell=None, grasp_info=grasp_info)
 
@@ -644,22 +736,91 @@ class OrchestratorRobot:
             self.c.log('move_stop_failed', message=str(error))
 
 
+def remote_home(runner, remote, cmd):
+    """Phone [홈 자세 복귀] while idle."""
+    remote.busy = True
+    remote.report('RETURNING_HOME', '홈 자세로 복귀 중입니다.', ack=cmd['seq'], result='done')
+    try:
+        runner.home()
+    except Exception as error:
+        remote.report('ERROR', f'홈 복귀 실패: {error}', ack=cmd['seq'], result='failed')
+        raise
+    finally:
+        remote.busy = False
+    remote.report('IDLE', '홈 복귀 완료 — 대기 중입니다.')
+
+
+def remote_scan(runner, remote, api, cmd, log):
+    """Phone [리더기 스캔 출동]: read the box tag with the arm's reader and queue it as a task."""
+    remote.busy = True
+    remote.report('SCANNING', '리더기 위치로 이동해 태그를 읽습니다.', ack=cmd['seq'], result='done')
+    try:
+        runner.pre_scan()
+        uid = runner.scan()
+        res = api.post('/api/v1/scan-event', json={'uid': uid, 'quantity': 1})
+        if res.status_code >= 400:
+            detail = res.json().get('detail') if res.headers.get('content-type', '').startswith('application/json') else res.text
+            log('remote_scan_rejected', uid=uid, status=res.status_code, detail=detail)
+            remote.report('IDLE', f'태그 {uid} 등록 실패: {detail}')
+        else:
+            log('remote_scan_queued', uid=uid)
+    finally:
+        remote.busy = False
+
+
+def wait_remote_trigger(runner, remote, log, triggers, timeout=0.0):
+    """Idle until the phone sends one of `triggers`; [홈 복귀] runs in the meantime. Returns the command."""
+    remote.busy = False
+    remote.report('IDLE', '대기 중 — 리모컨의 [작업 시작] 또는 [리더기 스캔 출동]을 누르세요.')
+    log('waiting_for_phone', triggers=list(triggers))
+    started = time.monotonic()
+    while True:
+        runner._estop_check()
+        cmd = remote.take(('home', *triggers))
+        if cmd is not None and cmd['command'] == 'home':
+            remote_home(runner, remote, cmd)
+            continue
+        if cmd is not None:
+            remote.busy = True
+            remote.report('RUNNING', f"{cmd['command']} — 사이클을 시작합니다.", ack=cmd['seq'], result='done')
+            return cmd
+        if timeout and time.monotonic() - started > timeout:
+            raise TimeoutError(f'No phone trigger within {timeout:.0f}s')
+        time.sleep(0.2)
+
+
 def run_remote_task(runner, args, log, cycle):
     """Execute the next task another PC queued through POST /api/v1/scan-event (UID -> DB match on the web)."""
     import httpx
     api = httpx.Client(base_url=args.api, timeout=10)
+    remote = runner.estop if isinstance(runner.estop, MobileRemote) else None
     runner.raw.check_ready()
     runner.home()
     log('waiting_for_tag', api=args.api, note='scan a tag on the remote reader PC')
+    if remote is not None:
+        remote.busy = False
+        remote.report('IDLE', '태그 대기 중 — 상자 배치 버튼, 리더기 스캔 출동, 홈 복귀를 사용할 수 있습니다.')
     started = time.monotonic()
     while True:
         task = api.get('/api/v1/current-task').raise_for_status().json()['task']
         if task is not None:
             break
         runner._estop_check()
+        if remote is not None:
+            cmd = remote.take(('home', 'scan_dispatch', 'start', 'box_placed'))
+            if cmd is not None and cmd['command'] == 'home':
+                remote_home(runner, remote, cmd)
+            elif cmd is not None and cmd['command'] == 'scan_dispatch':
+                remote_scan(runner, remote, api, cmd, log)
+            elif cmd is not None:
+                # Box tasks are queued by the web itself; start just confirms the cycle is waiting.
+                remote.report('IDLE', '대기 중 — 등록된 상자 작업을 확인합니다.', ack=cmd['seq'], result='done')
         if args.wait_timeout and time.monotonic() - started > args.wait_timeout:
             raise TimeoutError(f'No remote RFID task within {args.wait_timeout:.0f}s')
         time.sleep(0.5)
+    if remote is not None:
+        remote.busy = True
+        remote.report('PICKING', f"{task.get('product_name') or task.get('yolo_class_name')} 피킹을 시작합니다.")
     if task['status'] == 'PICKING':
         raise RuntimeError('Interrupted PICKING task requires operator reconciliation')
     tid, completed = task['task_id'], task['completed']
@@ -718,6 +879,9 @@ def main(argv=None):
                         help='with --api: wait for tasks queued by another PC (POST /api/v1/scan-event) instead of scanning')
     parser.add_argument('--wait-timeout', type=float, default=0, help='remote mode: seconds to wait per task, 0 = forever')
     parser.add_argument('--api', help='run the repo RFID Orchestrator against this web API, e.g. http://127.0.0.1:8000')
+    parser.add_argument('--remote-trigger', action='store_true',
+                        help='with --api (orchestrator mode): wait for the Galaxy remote [작업 시작]/[리더기 스캔 출동]/'
+                             '상자 배치 button before each cycle instead of starting immediately')
     parser.add_argument('--grid-rows', type=int, default=DEFAULT_GRID_ROWS, help='checkerboard grid rows (default 15)')
     parser.add_argument('--grid-cols', type=int, default=DEFAULT_GRID_COLS, help='checkerboard grid cols (default 15)')
     parser.add_argument('--pixel', help='optional detected pixel u,v inside the 4-corner ROI for grid picking')
@@ -728,6 +892,8 @@ def main(argv=None):
         parser.error('--mode real requires --confirm-real')
     if args.remote_rfid and not args.api:
         parser.error('--remote-rfid requires --api')
+    if args.remote_trigger and (not args.api or args.remote_rfid):
+        parser.error('--remote-trigger requires --api and does not combine with --remote-rfid (which already waits)')
     poses, products = load_config(args.product)
     log = Logger(args.log or ROOT / 'state' / 'project_cycle' / f'{args.mode}-{datetime.now():%Y%m%d-%H%M%S}.jsonl')
     taught = [*poses['poses'].values(), poses['box_slots'][1]]
@@ -740,20 +906,26 @@ def main(argv=None):
     signal.signal(signal.SIGTERM, on_signal)
     log('start', mode=args.mode, cycles=args.cycles or 'infinite', product=args.product, log=str(log.path))
     cycle, code = 0, 0
+    watch = None
     try:
         runner = Cycle(raw, poses, products, args, log)
         if args.api:
-            watch = MobileEStopWatch(args.api, raw.emergency_stop, log)
+            mode = 'remote_rfid' if args.remote_rfid else ('remote_trigger' if args.remote_trigger else 'orchestrator')
+            watch = MobileRemote(args.api, raw.emergency_stop, log, mode=mode)
             try:
-                if watch.poll():
+                status = watch.poll()
+                if status and status.get('emergency_stopped'):
                     raise RuntimeError('Mobile emergency stop is active; press reset_stop on the phone first')
+                if status:
+                    watch.apply(status)  # remembers the current command seq so old presses are ignored
             except RuntimeError:
                 raise
             except Exception as error:  # noqa: BLE001
                 log('estop_watch_unreachable', message=str(error))
             watch.start()
             runner.estop = watch
-            log('estop_watch', url=watch.url, note='phone E-stop -> move_stop; pendant E-Stop is still the real safety stop')
+            log('estop_watch', url=watch.url, mode=mode,
+                note='phone E-stop -> move_stop, pause/resume between steps; pendant E-Stop is still the real safety stop')
         while args.cycles == 0 or cycle < args.cycles:
             cycle += 1
             if args.api and args.remote_rfid:
@@ -763,17 +935,31 @@ def main(argv=None):
                 from robot_rfid.orchestrator import APIClient, Orchestrator
                 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)s %(message)s')
                 adapter = OrchestratorRobot(runner)
-                task = Orchestrator(APIClient(args.api), adapter, adapter, adapter).run_box(lambda: None)
+                if args.remote_trigger:
+                    trigger = lambda: wait_remote_trigger(  # noqa: E731
+                        runner, watch, log, ('start', 'scan_dispatch', 'box_placed'), args.wait_timeout)
+                else:
+                    watch.busy = True  # starts at once; phone start/scan/home are reported as ignored
+                    watch.report('RUNNING', '사이클 진행 중 (--remote-trigger 없이 실행됨).')
+                    trigger = lambda: None  # noqa: E731
+                task = Orchestrator(APIClient(args.api), adapter, adapter, adapter).run_box(trigger)
                 log('cycle_ok', cycle=cycle, scenario='orchestrator', task=task)
             else:
                 runner.run(cycle)
+            if watch is not None:
+                watch.busy = False
+                watch.report('IDLE', f'{cycle}번째 사이클 완료.')
     except KeyboardInterrupt:
         log('interrupted', cycle=cycle)
         code = 130
     except Exception as error:  # noqa: BLE001 - stop on anything, never retry motion
         log('error', cycle=cycle, type=type(error).__name__, message=str(error))
         code = 1
+        if watch is not None:
+            watch.report('ERROR', f'사이클 중단: {error}'[:300])
     finally:
+        if watch is not None:
+            watch.alive.clear()
         signal.signal(signal.SIGINT, signal.SIG_DFL)
         try:
             raw.stop()
