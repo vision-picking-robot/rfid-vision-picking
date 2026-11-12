@@ -110,9 +110,9 @@
    ```bash
    python -m robot_rfid.rfid_power --no-sleep
    ```
-2. Windows 블루투스 브리지 사용 시:
+2. Windows 브리지 사용 시 (리더기 키보드 입력 UID → 로봇 PC):
    ```bat
-   windows_rfid_bridge\4_run_bridge.bat
+   windows_rfid_bridge\run_bridge.bat
    ```
 
 ### [Phase 5] 통합 대시보드 및 실물 피킹 사이클 가동

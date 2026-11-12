@@ -9,23 +9,6 @@ bridge = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bridge)
 
 
-class FakeScanner:
-    def __init__(self, sequence):
-        self.sequence = list(sequence)
-
-    def scan(self, timeout=0):
-        item = self.sequence.pop(0)
-        if item is None:
-            raise TimeoutError
-        return item
-
-
-def test_tag_resting_on_reader_is_not_resent():
-    scanner = FakeScanner(['0B71E55D', '0B71E55D', None])
-    bridge.wait_removed(scanner, '0B71E55D')
-    assert scanner.sequence == []
-
-
 def test_submit_reuses_event_id_after_transport_error(monkeypatch):
     sent = []
 
