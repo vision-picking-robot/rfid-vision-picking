@@ -69,7 +69,7 @@ def test_list_tags_includes_custom_registration_in_one_database_read(tmp_path):
                 VALUES (?,?,?,?,?,?,?,?,?,?)''', custom)
         with patch.object(app.state.database, 'connect', wraps=app.state.database.connect) as connections:
             tags = client.get('/api/v1/tags').json()['tags']
-            assert len(tags) == 6 and tags[-1]['tag_uid'] == '000000A1'
+            assert len(tags) == 5 and tags[-1]['tag_uid'] == '000000A1'
             assert connections.call_count == 1
 
 

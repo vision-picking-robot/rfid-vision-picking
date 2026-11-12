@@ -12,7 +12,7 @@ KNOWN = [seed[0] for seed in SEEDS]
 
 
 def test_seed_uids_follow_reader_values():
-    assert KNOWN == ['0B71E55D', '0B71E75D', '0B71E65D', '0B71ED5D', '0B71EC5D']
+    assert KNOWN == ['0B71E55D', '0B71E75D', '0B71E65D', '0B71ED5D']
 
 
 @pytest.mark.parametrize('raw, expected', [
@@ -56,7 +56,7 @@ def test_existing_db_moves_product_to_seed_uid_with_history(tmp_path):
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT tag_uid FROM product_tag_mappings WHERE sku_code='LOTTE-PEPERO-01'").fetchone()[0] == '0B71E55D'
         assert db.execute("SELECT tag_uid FROM tasks WHERE task_id='t1'").fetchone()[0] == '0B71E55D'
-        assert db.execute('SELECT COUNT(*) FROM product_tag_mappings').fetchone()[0] == 5
+        assert db.execute('SELECT COUNT(*) FROM product_tag_mappings').fetchone()[0] == 4
         assert db.execute('PRAGMA foreign_key_check').fetchall() == []
 
 
@@ -71,3 +71,20 @@ def test_api_queues_partial_uid_and_rejects_ambiguous(tmp_path):
         ambiguous = client.post('/api/v1/scan-event', json={'uid': '0B71'})
         assert ambiguous.status_code == 409 and 'ambiguous' in ambiguous.json()['detail']
         assert client.post('/api/v1/scan-event', json={'uid': 'E7'}).status_code == 422
+
+
+def test_retired_plush_toy_tag_is_dropped_from_an_existing_db(tmp_path):
+    path = tmp_path / 'rfid.db'
+    Database(path).initialize()
+    with sqlite3.connect(path) as db:  # a DB created while the toy tag was still seeded, with finished history
+        db.execute("INSERT INTO product_tag_mappings (tag_uid,sku_code,product_name,category,target_class_id,"
+                   "yolo_class_name,inbound_at,expired_at,retail_price,target_box_id) VALUES "
+                   "('0B71EC5D','TOY-PLUSH-MINI','곰인형','TOY',4,'plush_toy','2026-09-01','9999-12-31',8900,'BOX-05')")
+        db.execute("INSERT INTO tasks(task_id,event_id,tag_uid,quantity,status,created_at) "
+                   "VALUES ('t1','e1','0B71EC5D',1,'DEFECTIVE','2026-11-12')")
+    Database(path).initialize()
+    database = Database(path)
+    assert database.product('0B71EC5D') is None
+    assert [p['tag_uid'] for p in database.products()] == KNOWN
+    with pytest.raises((KeyError, ValueError)):  # no longer registered: rejected, never matched to a product
+        database.resolve_uid('0B71EC5D')

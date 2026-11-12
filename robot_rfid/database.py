@@ -62,9 +62,10 @@ SEEDS = [
     ('0B71E75D', 'BEV-PET-500ML', '제로 콜라 500ml', 'BEVERAGE', 1, 'beverage_pet', '2026-11-05 09:30:00', '2027-05-04 23:59:59', 1600, 'BOX-02'),
     ('0B71E65D', 'CAN-SPAM-200G', '스팸 클래식 200g', 'CANNED', 2, 'canned_meat', '2026-10-15 10:00:00', '2029-10-14 23:59:59', 4800, 'BOX-03'),
     ('0B71ED5D', 'SAN-WIPES-100', '물티슈', 'SANITARY', 3, 'wet_wipes', '2026-11-02 16:20:00', '2028-11-01 23:59:59', 2200, 'BOX-04'),
-    ('0B71EC5D', 'TOY-PLUSH-MINI', '곰인형', 'TOY', 4, 'plush_toy', '2026-09-01 11:00:00', '9999-12-31 23:59:59', 8900, 'BOX-05'),
 ]
 SEED_TAGS = SEEDS
+# Tags once seeded but not on any real product (the plush toy has no tag); initialize() drops them from old DBs.
+REMOVED_SEED_TAGS = ('0B71EC5D',)
 
 
 class ActiveTaskError(ValueError):
@@ -118,6 +119,7 @@ class Database:
                     WHERE status IN ('READY','PICKING');
             ''')
         self._migrate_seed_uids()
+        self._drop_removed_tags()
         with self.connect() as db:
             db.executemany('''INSERT OR IGNORE INTO product_tag_mappings
                 (tag_uid,sku_code,product_name,category,target_class_id,yolo_class_name,
@@ -138,6 +140,16 @@ class Database:
                     continue  # UID already used by another product; leave the DB for a human to fix
                 db.execute('UPDATE product_tag_mappings SET tag_uid=? WHERE sku_code=?', (new_uid, sku))
                 db.execute('UPDATE tasks SET tag_uid=? WHERE tag_uid=?', (new_uid, row['tag_uid']))
+
+    def _drop_removed_tags(self):
+        """Delete retired seed tags and their finished task history; keep one with an active task for a human."""
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            for uid in REMOVED_SEED_TAGS:
+                if db.execute("SELECT 1 FROM tasks WHERE tag_uid=? AND status IN ('READY','PICKING')", (uid,)).fetchone():
+                    continue
+                db.execute('DELETE FROM tasks WHERE tag_uid=?', (uid,))
+                db.execute('DELETE FROM product_tag_mappings WHERE tag_uid=?', (uid,))
 
     def resolve_uid(self, raw):
         """Full registered UID for a full or partial reader value (see match_uid)."""

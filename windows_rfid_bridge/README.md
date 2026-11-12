@@ -97,7 +97,7 @@ windows_rfid_bridge\4_run_bridge.bat
 ```
 
 - 등록된 태그: `0B71E55D` 빼빼로/BOX-01, `0B71E75D` 생수·콜라/BOX-02, `0B71E65D` 스팸/BOX-03,
-  `0B71ED5D` 물티슈/BOX-04, `0B71EC5D` 인형/BOX-05
+  `0B71ED5D` 물티슈/BOX-04 (인형은 태그 없음)
 - 로봇 PC로 보내지 않고 UID만 보려면 `windows_rfid_bridge\read_uid_only.bat`
 - `X 등록 거부 4xx`: DB에 없는 태그이거나 상품 상태 문제. 대시보드에서 태그 등록을 확인한다.
 - 작업 진행·완료는 로봇 PC 대시보드 `http://<로봇PC IP>:8000` 에서 Windows 브라우저로도 볼 수 있다.

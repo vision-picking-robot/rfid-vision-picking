@@ -31,7 +31,7 @@ from vision_picking.legacy.safe_move import DR_BASE, SafeMover  # noqa: E402
 from vision_picking.pick_plane import Calibration, DEFAULT_GRID_COLS, DEFAULT_GRID_ROWS, PickPlane, compute_safe_grasp_z  # noqa: E402
 
 TAGS = {'0B71E55D': ('snack_pepero', 1), '0B71E75D': ('beverage_pet', 2), '0B71E65D': ('canned_meat', 3),
-        '0B71ED5D': ('wet_tissue', 4), '0B71EC5D': ('doll', 5)}
+        '0B71ED5D': ('wet_tissue', 4)}
 OPEN_MAX = 10
 JOINT_TOL = 1.0
 POS_TOL = 2.0

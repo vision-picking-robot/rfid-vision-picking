@@ -129,7 +129,7 @@ def test_rfid_routes_and_button_commands_integrated(controller, tmp_path):
     with TestClient(create_app(controller)) as client:
         tags = client.get('/api/v1/tags')
         assert tags.status_code == 200
-        assert len(tags.json()['tags']) == 5
+        assert len(tags.json()['tags']) == 4
         tag = client.get('/api/v1/tags/0B71E55D')
         assert tag.status_code == 200
         assert tag.json()['yolo_class_name'] == 'snack_pepero'

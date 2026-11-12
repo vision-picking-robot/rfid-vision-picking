@@ -50,5 +50,5 @@ def test_submit_reuses_event_id_after_transport_error(monkeypatch):
 def test_keyboard_mode_sends_typed_uids_and_skips_quick_repeats(monkeypatch):
     sent = []
     monkeypatch.setattr(bridge, 'submit', lambda api, uid, qty: sent.append(uid) or {'E75D': '0B71E75D'}.get(uid, uid))
-    bridge.keyboard_loop('http://robot:8000', 1, lines=['0b 71 e5 5d', '0B71E55D', 'E7', '', 'E75D', 'E75D', '0B71EC5D'])
-    assert sent == ['0B71E55D', 'E75D', '0B71EC5D']
+    bridge.keyboard_loop('http://robot:8000', 1, lines=['0b 71 e5 5d', '0B71E55D', 'E7', '', 'E75D', 'E75D', '0B71ED5D'])
+    assert sent == ['0B71E55D', 'E75D', '0B71ED5D']

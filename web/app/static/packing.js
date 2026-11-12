@@ -316,8 +316,7 @@ const rfidPresetTags = [
   ["0B71E55D", "빼빼로 (BOX-01)"],
   ["0B71E75D", "생수/콜라 (BOX-02)"],
   ["0B71E65D", "스팸 (BOX-03)"],
-  ["0B71ED5D", "물티슈 (BOX-04)"],
-  ["0B71EC5D", "인형 (BOX-05)"]
+  ["0B71ED5D", "물티슈 (BOX-04)"]
 ];
 let lastRfidMessage = "";
 
