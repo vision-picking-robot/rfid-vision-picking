@@ -74,11 +74,14 @@ def test_project_cycle_moves_faster_when_empty_than_when_holding(tmp_path):
     log = tmp_path / 'pc.jsonl'
     assert cycle.main(['--cycles', '1', '--log', str(log)]) == 0
     steps = {r['name']: r for r in (json.loads(line) for line in log.read_text().splitlines()) if r['event'] == 'step'}
-    # defaults: jvel 10, lvel 30, dvel 15; empty x1.5, from the descend to the release x1.25
-    assert steps['approach']['vel'] == 45.0 and steps['home_after_scan']['vel'] == 15.0
-    assert steps['descend']['vel'] == 18.8 and steps['lift']['vel'] == 37.5
-    assert steps['via_carry']['vel'] == 12.5 and steps['box_place']['vel'] == 18.8
-    assert steps['box_retreat']['vel'] == 45.0 and steps['via_return']['vel'] == 15.0
-    # going to the tag: travel at the empty speed, the last descent onto the reader slow and unscaled
-    assert steps['label_scan_approach']['vel'] == 15.0 and steps['label_scan']['vel'] == 10.0
-    assert steps['label_scan_retract']['vel'] == 45.0
+    # defaults: jvel 10, lvel 30, dvel 15; to the object x1.875, descend..release x1.5625, other empty moves x2.25
+    to_pick, load, travel = 1.875, 1.5625, 2.25
+    v = lambda base, k: round(base * k, 1)  # noqa: E731
+    assert steps['approach']['vel'] == v(30, to_pick)
+    assert steps['descend']['vel'] == v(15, load) and steps['lift']['vel'] == v(30, load)
+    assert steps['via_carry']['vel'] == v(10, load) and steps['box_place']['vel'] == v(15, load)
+    assert steps['box_retreat']['vel'] == v(30, travel) and steps['via_return']['vel'] == v(10, travel)
+    assert steps['home_after_scan']['vel'] == v(10, travel) and steps['home_return']['vel'] == v(10, travel)
+    # the tag reader: down at the same speed as back up
+    assert steps['label_scan_approach']['vel'] == v(10, travel)
+    assert steps['label_scan']['vel'] == steps['label_scan_retract']['vel'] == v(30, travel)

@@ -28,8 +28,8 @@ products:
       rz: 0.0
       grasp_height_from_floor: 120.0
       taught: true
-      # 빈 종이 상자라 150mA에서 찌그러짐(705까지 닫힘). 속을 채우기 전까지 약하게 잡는다.
-      grip_current_ma: 110
+      # 빈 종이 상자라 150mA에서 찌그러짐(705까지 닫힘). 110mA에서도 충분히 잡혀(483) 90mA로 더 낮춤.
+      grip_current_ma: 90
     virtual: {x: 491.5, y: -5.0, rz: 0.0, grasp_height_from_floor: 120.0}
     grip_force: null
 
@@ -95,6 +95,8 @@ products:
       taught: true
       # 속이 눌려도 괜찮아 조금 더 꽉 잡는다 (기본 150mA).
       grip_current_ma: 180
+      # 꼭대기 20mm(기본)는 얕게 잡혀 빠짐(2026-11-12) → 1cm 더 깊게. 최대 35mm (손끝~손바닥 50 - 여유 15).
+      top_bite_offset_mm: 30.0
     virtual: {x: 450.0, y: -150.0, rz: 0.0, grasp_height_from_floor: 30.0}
     grip_force: null
 

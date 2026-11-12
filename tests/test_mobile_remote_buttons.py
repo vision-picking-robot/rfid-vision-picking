@@ -196,7 +196,7 @@ def test_phone_scan_dispatch_waits_for_the_bridge_tag_then_picks_it(live_api, tm
     press(live_api, 'scan_dispatch')
     # the arm-mounted reader is on the tag; the Windows bridge sends what it read
     wait_for(lambda: any(e['event'] == 'scan_waiting' for e in events(log)))
-    assert any(e.get('name') == 'label_scan' and e['vel'] == 10.0 for e in events(log))  # slow onto the reader
+    assert any(e.get('name') == 'label_scan' and e['vel'] == 67.5 for e in events(log))  # same speed as back up
     httpx.post(live_api + '/api/v1/scan-event', json={'uid': '0B71E65D'}).raise_for_status()
     t.join(30)
     evs = events(log)
@@ -234,3 +234,25 @@ def test_phone_estop_while_paused_stops_the_cycle(live_api, tmp_path):
     t.join(30)
     names = [e['event'] for e in events(log)]
     assert box['rc'] == 1 and 'move_stop_sent' in names and 'cycle_ok' not in names
+
+
+def test_remote_rfid_cycle_holds_on_estop_and_carries_on_after_reset(live_api, tmp_path):
+    log = tmp_path / 'hold.jsonl'
+    t, box = run_cycle(['--api', live_api, '--remote-rfid', '--cycles', '2', '--wait-timeout', '30',
+                        '--log', str(log)])
+    wait_for(lambda: any(e['event'] == 'waiting_for_tag' for e in events(log)))
+    wait_for(lambda: httpx.get(live_api + '/api/v1/mobile/status').json()['robot_connected'])
+    press(live_api, 'emergency_stop')
+    wait_for(lambda: any(e['event'] == 'estop_hold' for e in events(log)))
+    time.sleep(0.5)
+    assert t.is_alive(), 'cycle must wait for the release, not exit'
+    assert httpx.get(live_api + '/api/v1/mobile/status').json()['robot_link']['state'] == 'ESTOPPED'
+    press(live_api, 'reset_stop')
+    wait_for(lambda: any(e['event'] == 'estop_released' for e in events(log)))
+    wait_for(lambda: sum(e['event'] == 'waiting_for_tag' for e in events(log)) >= 2)
+    httpx.post(live_api + '/api/v1/scan-event', json={'uid': '0B71E65D'}).raise_for_status()
+    t.join(30)
+    evs = events(log)
+    assert box['rc'] == 0 and any(e['event'] == 'cycle_ok' for e in evs)
+    names = [e.get('name') for e in evs]
+    assert names.index('home_return') < names.index('approach')

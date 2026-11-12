@@ -288,6 +288,7 @@ class MobileRemote(threading.Thread):
         self.mode = mode
         self.stop_fn, self.log, self.period = stop_fn, log, period
         self.tripped = threading.Event()
+        self.estop_active = False  # latest web state; tripped stays set until wait_reset() clears it
         self.paused = threading.Event()
         self.alive = threading.Event()
         self.alive.set()
@@ -321,6 +322,7 @@ class MobileRemote(threading.Thread):
         """Update pause/E-stop flags and queue new commands from one status poll."""
         if isinstance(status, bool):  # legacy poll result: E-stop flag only
             status = {'emergency_stopped': status}
+        self.estop_active = bool(status.get('emergency_stopped'))
         if status.get('emergency_stopped') and not self.tripped.is_set():
             self.tripped.set()
             self.log('mobile_emergency_stop', action='move_stop')
@@ -354,7 +356,8 @@ class MobileRemote(threading.Thread):
 
     def run(self):
         warned = False
-        while self.alive.is_set() and not self.tripped.is_set():
+        # Keeps polling after an E-stop: --remote-rfid waits for reset_stop and carries on.
+        while self.alive.is_set():
             try:
                 status = self.poll()
                 if status is None:
@@ -363,13 +366,20 @@ class MobileRemote(threading.Thread):
                     return
                 warned = False
                 self.apply(status)
-                if self.tripped.is_set():
-                    return
             except Exception as error:  # noqa: BLE001
                 if not warned:
                     self.log('estop_watch_unreachable', message=str(error))
                     warned = True
             time.sleep(self.period)
+
+    def wait_reset(self):
+        """Block until the web shows the E-stop released (phone [정지 해제] or voice 작업 재개)."""
+        while self.alive.is_set():
+            if self.tripped.is_set() and not self.estop_active:
+                self.tripped.clear()
+                return True
+            time.sleep(self.period)
+        return False
 
     def take(self, wanted):
         """Pop the oldest queued command whose name is in `wanted` (others stay queued)."""
@@ -488,9 +498,16 @@ class Cycle:
             self.estop.check()
 
     def speed(self):
-        """Speed factor: --load-speed while grasping, holding or placing, --empty-speed otherwise."""
-        loaded = getattr(self, '_loaded', False)
-        return float(getattr(self.args, 'load_speed' if loaded else 'empty_speed', 1.0) or 1.0)
+        """Speed factor: --load-speed from the descend onto the object until it is released,
+        --empty-speed on the way to the object, --travel-speed for every other empty move
+        (home, tag reader, back from the box)."""
+        if getattr(self, '_loaded', False):
+            key = 'load_speed'
+        elif getattr(self, '_to_pick', False):
+            key = 'empty_speed'
+        else:
+            key = 'travel_speed'
+        return float(getattr(self.args, key, None) or getattr(self.args, 'empty_speed', 1.0) or 1.0)
 
     def j(self, name, posj):
         self._estop_check()
@@ -521,7 +538,11 @@ class Cycle:
 
     def grip(self, name, target, ok, current=None, settle_s=0.0):
         self._estop_check()
+        t0 = time.monotonic()
         fb = self.raw.grip(target, current)
+        command_s = time.monotonic() - t0
+        if command_s > 8.0:  # normally ~4 s; the controller's DRL start/report was slow
+            self.log('gripper_slow', name=name, seconds=round(command_s, 1))
         # At a low force limit the fingers keep creeping into a soft or slipping object for a
         # moment after the DRL settle time; poll the status until they stop (code 1, moving 0).
         deadline = time.monotonic() + settle_s
@@ -530,7 +551,8 @@ class Cycle:
             fb = self.raw.grip(-1)
         if fb['code'] != 1 or fb['moving'] or not ok(fb['position_pulses']):
             raise RuntimeError(f"{name}: gripper not confirmed ({fb['result']}, pos={fb['position_pulses']})")
-        self.log('step', name=name, kind='gripper', position=fb['position_pulses'], current=fb['current'])
+        self.log('step', name=name, kind='gripper', position=fb['position_pulses'], current=fb['current'],
+                 seconds=round(time.monotonic() - t0, 1))
         return fb
 
     # ---- Steps matching robot_rfid.orchestrator.Orchestrator's robot interface ----
@@ -546,9 +568,8 @@ class Cycle:
         self.j('home', P['home']['posj'])
         self.j('label_scan_approach', P['label_scan_approach']['posj'])
         scan_hi = P['label_scan_approach']['posx']
-        # Last stretch onto the tag: slow and unscaled so the reader settles on it without a knock.
-        self.l('label_scan', [*scan_hi[:2], P['label_scan']['posx'][2], *scan_hi[3:]],
-               getattr(self.args, 'scan_vel', 10.0), scaled=False)
+        # Down onto the tag at the same speed as label_scan_retract goes back up (operator choice).
+        self.l('label_scan', [*scan_hi[:2], P['label_scan']['posx'][2], *scan_hi[3:]])
 
     def scan(self):
         uid = self.raw.scan()
@@ -712,6 +733,7 @@ class Cycle:
         min_z = floor_z + height + 20.0 if height else grasp[2] + 40.0
         approach_z = self.reach_z('approach', grasp, grasp[2] + up, min_z)
         above_z = self.reach_z('lift', grasp, grasp[2] + up + self.args.lift_extra, approach_z)
+        self._to_pick = True  # pre_approach / approach at --empty-speed
         self._hang = max(0.0, grasp[2] - floor_z)  # held object length below the fingertip
         self._approach = [*grasp[:2], approach_z, *grasp[3:]]
         self._above = [*grasp[:2], above_z, *grasp[3:]]
@@ -730,7 +752,7 @@ class Cycle:
             self._grid_approach = [cell_xy[0], cell_xy[1], approach_z, *grasp[3:]]
             self.l('grid_coarse_approach', self._grid_approach, tol=WAYPOINT_TOL)
         self.l('approach', self._approach, tol=WAYPOINT_TOL)
-        self._loaded = True  # descend, grasp, carry and place at --load-speed
+        self._loaded, self._to_pick = True, False  # descend, grasp, carry and place at --load-speed
         self.l('descend', grasp, self.args.dvel)
 
     def grip_object(self):
@@ -814,6 +836,15 @@ class Cycle:
 
     def home(self):
         self.j('home_return', self.poses['poses']['home']['posj'])
+
+    def recover_home(self):
+        """After a stop mid-motion: rise straight up to the home height, then go home."""
+        cur = FlangeOffset(self.raw, self.offset).get_current_posx(DR_BASE)
+        safe_z = self.poses['poses']['home']['posx'][2]
+        if cur is not None and cur[2] < safe_z - POS_TOL:
+            self.log('recovery', tcp=[round(v, 1) for v in cur[:3]], rise_to=safe_z)
+            self.l('recovery_rise', [cur[0], cur[1], safe_z, *cur[3:6]], self.args.dvel)
+        self.home()
 
     def stop(self):
         self.raw.stop()
@@ -1016,14 +1047,14 @@ def main(argv=None):
                         'e.g. http://127.0.0.1:8000 (needs --picking-config with depth_picking.zones)')
     parser.add_argument('--grip-current', type=int, default=150,
                         help='gripper goal current in mA for the grasp (force limit; was 400, which crushed snack boxes)')
-    parser.add_argument('--empty-speed', type=float, default=1.5,
-                        help='speed factor (x jvel/lvel/dvel) while the gripper is empty')
-    parser.add_argument('--load-speed', type=float, default=1.25,
+    parser.add_argument('--empty-speed', type=float, default=1.875,
+                        help='speed factor (x jvel/lvel/dvel) on the way to the object (gripper empty)')
+    parser.add_argument('--travel-speed', type=float, default=2.25,
+                        help='speed factor for the other empty moves: home, to/from the tag reader, back from the box')
+    parser.add_argument('--load-speed', type=float, default=1.5625,
                         help='speed factor from the descend to the grasp until the release (holding the object)')
     parser.add_argument('--scan-wait', type=float, default=10.0,
                         help='[리더기 스캔 출동]: seconds to wait at the reader for the Windows bridge to send a tag')
-    parser.add_argument('--scan-vel', type=float, default=10.0,
-                        help='mm/s for the final descent onto the tag reader position (not scaled by --empty-speed)')
     parser.add_argument('--require-object', action='store_true', help='fail when the gripper closes empty')
     parser.add_argument('--remote-rfid', action='store_true',
                         help='with --api: wait for tasks queued by another PC (POST /api/v1/scan-event) instead of scanning')
@@ -1079,7 +1110,24 @@ def main(argv=None):
         while args.cycles == 0 or cycle < args.cycles:
             cycle += 1
             if args.api and args.remote_rfid:
-                run_remote_task(runner, args, log, cycle)
+                try:
+                    run_remote_task(runner, args, log, cycle)
+                except RuntimeError as error:
+                    if not (watch is not None and watch.tripped.is_set()):
+                        raise
+                    # E-stop: motion already stopped (task marked DEFECTIVE if it was running).
+                    # Hold until it is released, then recover and wait for the next task.
+                    log('estop_hold', cycle=cycle, message=str(error))
+                    watch.busy = True
+                    watch.report('ESTOPPED', '비상 정지 — 정지 해제(또는 음성 "작업 재개")를 기다립니다.')
+                    if not watch.wait_reset():
+                        raise
+                    log('estop_released', cycle=cycle)
+                    watch.report('RUNNING', '정지 해제 — 홈으로 복귀합니다.')
+                    runner.raw.check_ready()
+                    runner.recover_home()
+                    watch.busy = False
+                    continue
             elif args.api:
                 import logging
                 from robot_rfid.orchestrator import APIClient, Orchestrator
