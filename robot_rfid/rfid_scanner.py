@@ -35,7 +35,12 @@ class RFIDScanner:
                     any(name in str(r).lower() for name in ('acr1552', 'acr1555'))
                     and 'sam' not in str(r).lower())]
                 if len(matches) > 1:
-                    raise RuntimeError('Multiple matching readers; specify --reader')
+                    # Prefer USB reader over offline Bluetooth virtual reader if both are listed
+                    usb_matches = [r for r in matches if '1s cl' in str(r).lower()]
+                    if len(usb_matches) == 1:
+                        matches = usb_matches
+                    else:
+                        raise RuntimeError('Multiple matching readers; specify --reader')
                 if not matches:
                     raise ConnectionError('No matching PC/SC reader')
                 connection = matches[0].createConnection()
