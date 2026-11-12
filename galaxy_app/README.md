@@ -32,6 +32,29 @@
 
 ---
 
+## 버튼이 로봇을 움직이려면 (로봇 PC 사이클 실행 필수)
+
+앱 버튼은 웹 서버에 명령을 저장할 뿐이고, 실제 동작은 로봇 PC의 `scripts/project_cycle.py --api ...`가 수행한다.
+앱 상단 「04 매니퓰레이터 제어」의 연결 표시가 **「로봇 PC 사이클 연결됨」**이어야 버튼이 동작한다.
+
+```
+# 리모컨으로 출동시키는 모드: [작업 시작]/[리더기 스캔 출동]/상자 배치 버튼을 누를 때마다 1사이클
+python scripts/project_cycle.py --mode real --confirm-real --api http://127.0.0.1:8000 --remote-trigger --cycles 0 --picking-config config/integration.real.json --depth-api http://127.0.0.1:8000
+# 태그 대기 모드: 상자 배치 버튼/다른 PC 리더기로 등록된 작업을 처리, [리더기 스캔 출동]은 로봇 리더기로 태그 읽기
+python scripts/project_cycle.py --mode real --confirm-real --api http://127.0.0.1:8000 --remote-rfid --cycles 0
+```
+
+| 버튼 | 동작 |
+|---|---|
+| 작업 시작 · 재개 | 대기 중이면 사이클 시작(`--remote-trigger`), 일시정지 중이면 재개 |
+| 일시정지 | 다음 동작 전에 멈춤 (진행 중인 한 동작은 끝까지 수행) |
+| 리더기 스캔 출동 | 리더기 위치로 이동해 태그를 읽고 작업 시작 |
+| 홈 자세 복귀 | 대기 중일 때만 홈 자세로 이동 (사이클 중에는 무시하고 알림) |
+| 비상 정지 / 정지 해제 | 즉시 move_stop. 해제는 [정지 해제] 버튼으로만 가능 |
+
+「03 작업 영역」은 교시한 꼭짓점 1~4(BASE mm)를 실제 비율의 직사각형으로 그리고 15×15 셀로 나눈다.
+깊이 카메라(`/api/robot/pick/depth-objects`)가 찾은 구역별 물품을 실선 테두리로, 로봇 사이클이 마지막으로 인식한 위치를 점선으로 표시한다.
+
 ## 안전 주의 (비상 정지)
 
 - 앱의 **비상 정지**는 로봇 PC에서 `scripts/project_cycle.py ... --api http://127.0.0.1:8000`이 실행 중일 때만 실제 로봇을 멈춘다.

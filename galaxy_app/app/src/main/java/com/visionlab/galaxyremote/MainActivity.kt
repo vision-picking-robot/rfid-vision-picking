@@ -15,6 +15,7 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
@@ -99,6 +100,8 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             settings.domStorageEnabled = true
             settings.useWideViewPort = true
             settings.loadWithOverviewMode = true
+            // Always fetch the live /remote page so server-side fixes reach the phone without reinstalling.
+            settings.cacheMode = WebSettings.LOAD_NO_CACHE
             webChromeClient = WebChromeClient()
             webViewClient = object : WebViewClient() {
                 override fun onReceivedError(
@@ -215,7 +218,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
     inner class GalaxyBridge {
         @JavascriptInterface
         fun vibrate(ms: Long) {
-            vibratePhone(ms)
+            vibratePhone(ms.coerceIn(1L, 2000L))
         }
 
         @JavascriptInterface
