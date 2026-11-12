@@ -25,7 +25,7 @@ Ubuntu 24.04 / ROS 2 Jazzy / Python 3.12 및 Windows 10/11 호환 기준이다.
   - 메인 대시보드 우측 **[현재 주문 · 수동 버튼 및 RFID 제어]** 패널에서 마이크 없이 즉시 버튼 클릭으로 제어 가능:
     - `▶ 시작 (재개)` / `⏸ 정지` / `🦾 집어 (피킹)` / `📦 재고 조회` / `📋 주문 조회` / `🛒 예시 주문`
 - **RFID 태그 인식 제어 (`robot_rfid` 통합)**:
-  - `📡 RFID 리더기 스캔` 버튼 클릭 시 PC/SC 리더기(`ACR1555`)에서 태그를 읽고, 리더기 미연결 시에도 4종 프리셋 버튼(`🏷️ 빼빼로 0B71E55D`, `🏷️ 생수/콜라 0B71E75D`, `🏷️ 스팸 0B71E65D`, `🏷️ 물티슈 0B71ED5D`)으로 즉시 태그 스캔 및 피킹 작업 큐 등록 가능.
+  - `📡 RFID 리더기 스캔` 버튼 클릭 시 PC/SC 리더기(`ACR1555`)에서 태그를 읽고, 리더기 미연결 시에도 4종 프리셋 버튼(`🏷️ 쫀득초코칩 0B71E55D`, `🏷️ 복숭아녹차 0B71E75D`, `🏷️ 스팸 0B71E65D`, `🏷️ 물티슈 0B71ED5D`)으로 즉시 태그 스캔 및 피킹 작업 큐 등록 가능.
 - **카메라 및 3D Depth 측정 (`web/app/capture.py`, `camera_depth/`)**:
   - 웹 대시보드 좌측 **[탐지 카메라]** 패널에서 USB/DirectShow/V4L2 웹캠 및 Intel RealSense(`컬러`, `깊이 맵`, `적외선`, `RGBD`, `3D 포인트 클라우드`) 실시간 스트리밍 지원.
   - RealSense D455f 단독 3D 높이/거리 실측 도구는 `camera_depth/run_measure_height.bat` (`realsense_measure_height.py`) 및 `camera_depth/run_viewer.bat`로 즉시 실행 가능.

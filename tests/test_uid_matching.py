@@ -88,3 +88,13 @@ def test_retired_plush_toy_tag_is_dropped_from_an_existing_db(tmp_path):
     assert [p['tag_uid'] for p in database.products()] == KNOWN
     with pytest.raises((KeyError, ValueError)):  # no longer registered: rejected, never matched to a product
         database.resolve_uid('0B71EC5D')
+
+
+def test_seed_display_names_follow_the_real_items(tmp_path):
+    path = tmp_path / 'rfid.db'
+    Database(path).initialize()
+    with sqlite3.connect(path) as db:  # a DB created with the old item names
+        db.execute("UPDATE product_tag_mappings SET product_name='아몬드 빼빼로' WHERE sku_code='LOTTE-PEPERO-01'")
+    Database(path).initialize()
+    assert Database(path).product('0B71E55D')['product_name'] == '쫀득초코칩'
+    assert Database(path).product('0B71E75D')['product_name'] == '복숭아녹차 (페트병)'
