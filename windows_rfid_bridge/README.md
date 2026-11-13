@@ -21,7 +21,7 @@ PC/SC 드라이버는 쓰지 않는다.
 
 ```bat
 cd %USERPROFILE%\Desktop
-git clone https://github.com/leechanghwanspace/test.git robotArm_Controller_demo
+git clone https://github.com/vision-picking-robot/rfid-vision-picking.git robotArm_Controller_demo
 ```
 
 업데이트는 `git pull`(ZIP이면 다시 받아 덮어쓰기). `windows_rfid_bridge\api_url.txt`와 `.venv-win`은 남겨도 된다.
