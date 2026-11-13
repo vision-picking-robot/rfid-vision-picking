@@ -202,7 +202,16 @@ export function connectDashboardCamera(panel, getStation) {
   const classes = createClassSummary(fields, getStation);
   const source = cameraSource(fields);
   const pick = connectCameraPick(panel);
-  const stopDepth = connectDepthOverlay(fields.depth, fields.image);
+  // With a trained product YOLO the chips, count and caption follow it, not the generic camera model.
+  let productFrame = null;
+  const stopDepth = connectDepthOverlay(fields.depth, fields.image, data => {
+    productFrame = data;
+    if (!data) return;
+    const objects = data.detections.filter(d => d.confidence >= 0.5)
+      .map(d => ({class_id: d.product, label: d.name, confidence: d.confidence, xyxy: d.xyxy}));
+    classes.update({objects, source_size: {width: data.size[0], height: data.size[1]}, display_mode: displayMode});
+    fields.count.textContent = String(objects.length);
+  });
   const stopTags = connectTagFeed(fields.tagFeed);
   let stop, disposed = false;
   let displayMode = "detections";
@@ -254,11 +263,14 @@ export function connectDashboardCamera(panel, getStation) {
       }
     },
     onDetections(packet, jpeg) {
-      classes.update(packet);
+      if (!productFrame) {
+        classes.update(packet);
+        fields.count.textContent = String(packet.objects.length);
+      }
       pick.update(packet, jpeg);
       fields.image.parentElement.style.aspectRatio = packet.source_size.width + "/" + packet.source_size.height;
-      fields.count.textContent = String(packet.objects.length);
-      fields.caption.textContent = [packet.model_version || packet.model, "탐지 #" + packet.frame_id].filter(Boolean).join(" · ");
+      const model = productFrame ? "상품 인식 " + productFrame.model : packet.model_version || packet.model;
+      fields.caption.textContent = [model, "탐지 #" + packet.frame_id].filter(Boolean).join(" · ");
       fields.caption.hidden = fields.image.hidden;
     },
     onPreview(visible) {

@@ -284,12 +284,41 @@ def pv_cancel(request: Request):
     return vision(request).status()
 
 
+def label_objects(objects, detections, min_confidence=MIN_CONFIDENCE, min_overlap=MIN_OVERLAP):
+    """Name each depth object after the YOLO box that covers it best; detections left over have no depth
+    object under them (outside the work area or not standing on the table)."""
+    used = set()
+    for obj in objects:
+        best = None
+        for i, det in enumerate(detections):
+            if det["confidence"] < min_confidence or i in used:
+                continue
+            score = box_overlap(det["xyxy"], obj["bbox"])
+            if score >= min_overlap and (best is None or score > best[0]):
+                best = (score, i, det)
+        if best is not None:
+            used.add(best[1])
+            det = best[2]
+            obj.update(product=det["product"], product_name=det.get("name") or NAMES.get(det["product"], det["product"]),
+                       confidence=det["confidence"])
+    return [d for i, d in enumerate(detections) if i not in used and d["confidence"] >= min_confidence]
+
+
 @router.get("/detect")
 async def pv_detect(request: Request):
+    """Depth objects of the newest frame named by the product YOLO (dashboard camera overlay).
+    Without a trained model the depth objects come back unnamed and `model` is None."""
     import asyncio
-    color, objects = await _frame_objects(request)
-    detections = await asyncio.to_thread(vision(request).detect, color)
-    return {"detections": detections, "objects": objects, "size": [color.shape[1], color.shape[0]]}
+    from .robot_pick import locate_depth_objects
+    sensors = request.app.state.pipeline.latest_sensors()
+    found = await locate_depth_objects(request.app, sensors=sensors)
+    pv = vision(request)
+    active = pv.active()
+    detections = await asyncio.to_thread(pv.detect, sensors.color) if active else []
+    unmatched = label_objects(found["objects"], detections)
+    return {**found, "detections": detections, "unmatched": unmatched,
+            "model": active["run"] if active else None,
+            "size": [sensors.color.shape[1], sensors.color.shape[0]]}
 
 
 @router.get("/locate")

@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from fastapi import HTTPException
 
-from app.product_vision import ProductVision, box_overlap, match_detection, yolo_label
+from app.product_vision import ProductVision, box_overlap, label_objects, match_detection, yolo_label
 
 
 def obj(bbox, base=(500.0, 0.0), inside=True, height=60.0):
@@ -45,6 +45,18 @@ class MatchTests(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             match_detection("canned_meat", [det("canned_meat", [0, 0, 10, 10])], [obj([0, 0, 10, 10], inside=False)])
         self.assertIn("깊이 물체와 맞지 않습니다", str(ctx.exception))
+
+
+class LabelTests(unittest.TestCase):
+    def test_depth_objects_take_the_name_of_the_yolo_box_over_them(self):
+        """Dashboard overlay: the wet wipes standing in the spam zone are named 물티슈, not 스팸."""
+        wipes, spam, unknown = obj([300, 110, 360, 200]), obj([360, 120, 410, 180]), obj([10, 10, 30, 30])
+        detections = [det("wet_wipes", [303, 111, 356, 202], 0.87), det("canned_meat", [360, 123, 409, 181], 0.91),
+                      det("beverage_pet", [600, 400, 630, 440], 0.7), det("snack_pepero", [10, 10, 30, 30], 0.2)]
+        unmatched = label_objects([wipes, spam, unknown], detections)
+        self.assertEqual((wipes["product_name"], spam["product_name"]), ("물티슈", "스팸"))
+        self.assertNotIn("product", unknown)  # only a low-confidence box over it
+        self.assertEqual([d["product"] for d in unmatched], ["beverage_pet"])  # seen, but no depth object under it
 
 
 class CaptureTests(unittest.TestCase):
