@@ -4,6 +4,9 @@
 기본값은 MOCK이며 로봇에 연결하지 않는다. 실물 보정·TCP·상품별 파지값 검증은 남아 있다.
 이 저장소만 clone하면 제어기, 웹/음성 소스, 설정, 분석 문서가 함께 내려온다.
 
+> **실습실 다음 작업:** [docs/LAB_HANDOFF.md](docs/LAB_HANDOFF.md) — 최근 추가 기능(관제 프로그램, 웹캠 안전 감시,
+> 파지 재시도, 음성 매뉴얼)과 `git pull` 후 확인할 순서·남은 결정이 정리되어 있다.
+
 ## 최종 실행 절차: main 갱신부터 실물 연결까지
 
 **전제:** Ubuntu 24.04 / ROS 2 Jazzy / Python 3.12를 사용하며, 장비와 호환되는 두산 드라이버가
@@ -326,6 +329,13 @@ Web Speech API의 `ko-KR` 전사를 기존 packing 처리기로 전달한다. Ch
   - 웹 대시보드(`web/app/capture.py`, `web/app/realsense.py`, `web/app/pick_plane.py`)에 OpenCV(Linux V4L2 / Windows DirectShow / macOS AVFoundation) 실시간 카메라 스트리밍, Intel RealSense 깊이·적외선·RGBD·3D 포인트 클라우드 뷰, 4점 평면 호모그래피(`PickPlane`) 좌표 변환이 포함되어 있다.
   - 추가적으로 `camera_depth/` 폴더에 RealSense D455f 기반 실시간 3D 높이·거리 측정기(`camera_depth/realsense_measure_height.py`, `camera_depth/run_measure_height.bat`) 및 전용 뷰어(`camera_depth/realsense_viewer.py`, `camera_depth/run_viewer.bat`)가 함께 포함되어 있다.
 
+## 파지 실패 자동 재시도
+
+그리퍼가 빈 채로 닫히면(전류·위치로 판정) 그리퍼를 열고 위로 빠진 뒤 물체 위치를 다시 찾아 **한 번 더** 집는다.
+두 번째도 실패하면 로봇을 정지(비상 정지 상태)하고 폰·웹·Windows 관제 프로그램에 "파지 실패"를 알린다(폰은 진동).
+물건과 그리퍼를 확인한 뒤 **[정지 해제]**(폰·웹, 또는 음성 "정지 해제" / 자동 진행 중 "작업 재개")를 누르면
+그리퍼를 열고 홈으로 돌아가 다음 작업을 기다린다. 재시도 횟수는 `--grasp-retries N`(기본 1, 0이면 예전처럼 빈 그리퍼로 진행).
+
 ## 작업 영역 안전 감시 (USB 웹캠)
 
 작업대에 고정한 USB 웹캠으로, 로봇이 **물건을 집으러 그 구역에 들어가는 동안에만**(접근 → 하강 → 집기) 그 구역 근처의
@@ -340,6 +350,7 @@ Web Speech API의 `ko-KR` 전사를 기존 packing 처리기로 전달한다. Ch
 - 브라우저는 클릭 전에는 소리를 낼 수 없으므로 시연 전에 **[경고음·음성 켜기]**를 한 번 누른다.
 - 사람 인식은 기본 YOLO(COCO) 모델의 `person` 클래스를 쓰고, 모델이 없으면 OpenCV 사람 검출기(HOG)를 쓴다.
 - 카메라 없이 리허설: **[가상 작업자 진입]** 버튼 (피킹 접근 중일 때 경고 → 정지 → 재가동이 그대로 동작).
+- 갤럭시 리모컨에도 화면 맨 위에 경고(노랑)·정지(빨강)·안전구역 확보(파랑) 배너가 뜨고 단계마다 다른 패턴으로 진동한다.
 - 로봇 쪽은 `project_cycle.py ... --api`로 실행 중이면 따로 설정할 것이 없다.
 - 시연 보조 기능이며 인증된 안전장치가 아니다. 펜던트 E-Stop을 항상 가까이 둔다. 웹캠이 끊기면 감시가 멈추므로 화면의 카메라 상태를 확인한다.
 
