@@ -96,7 +96,8 @@ def create_app(settings=None, pipeline_factory=Pipeline, state_root=None):
         application.state.voice = voice
         # Work-area safety webcam (warning -> hold -> "안전구역 확보" resume); see app/safety.py
         safety = SafetyMonitor(Path(state_root or settings.state_dir) / "safety.json", settings,
-                               phase_fn=application.state.safety_phase, hold_fn=application.state.set_safety_hold)
+                               phase_fn=application.state.safety_phase, hold_fn=application.state.set_safety_hold,
+                               state_fn=application.state.set_safety_state)
         application.state.safety = safety
         try:
             pipeline.start()

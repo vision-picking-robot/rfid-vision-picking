@@ -497,7 +497,9 @@ function renderVoice() {
     stateLabel = `피킹 로봇 가동 중 · ${auto.done}/${auto.total} · ${phase}${auto.muted ? " (음성 명령 차단)" : ""}`;
   }
   const hint = clapNote || status.error || (status.state === "disabled" ? "YOLO_VOICE_ENABLED=1로 서버를 시작하세요." : "");
-  voicePanel.innerHTML = `<div class="row"><h3>음성 명령</h3>${button("voice", "닫기", "link")}</div>
+  voicePanel.innerHTML = `<div class="row"><h3>음성 명령</h3><div class="buttons">
+      ${button("voice-manual", manualOpen ? "사용법 닫기" : "음성 사용법", manualOpen ? "main-btn" : "")}${button("voice", "닫기", "link")}</div></div>
+    ${manualOpen ? manualHtml() : ""}
     <p role="status">${escapeHtml(stateLabel || "상태 확인 중")}</p>
     <div class="buttons">${button("wake", "음성 명령 켜기 (박수 대기)", "main-btn", clapArmed || status.state === "disabled")}
       ${button("listen-now", "바로 듣기", "", !canWake)}
@@ -507,6 +509,35 @@ function renderVoice() {
     ${status.reply ? `<p>Yuna · ${escapeHtml(status.reply)}</p>` : ""}
     <h3>버튼으로 실행</h3><div class="buttons">${commands}</div>
     ${reply ? `<p class="reply" role="status">${escapeHtml(reply)}</p>` : ""}${confirm}`;
+}
+
+// ---- voice manual (GET /api/voice/manual: the recognizer's own word lists) ----
+let manualOpen = false, voiceManual = null;
+const chips = words => `<span class="chips">${words.map(w => `<span class="chip">${escapeHtml(w)}</span>`).join("")}</span>`;
+
+function manualHtml() {
+  const m = voiceManual;
+  if (!m) return '<p class="meta">사용법을 불러오는 중입니다.</p>';
+  const tone = {danger: "chip-danger", warn: "chip-warn", ask: ""};
+  return `<section class="voice-manual" aria-label="음성 사용법">
+    <div class="manual-block"><h4>시작하기</h4><ul>${m.start.map(s => `<li>${escapeHtml(s)}</li>`).join("")}</ul></div>
+    <div class="manual-block"><h4>바로 실행 <small>되묻지 않음</small></h4>
+      <div class="manual-cards">${m.immediate.map(c => `<div class="manual-card ${tone[c.tone] || ""}">
+        <strong>${escapeHtml(c.title)}</strong>${chips(c.words)}<p>${escapeHtml(c.effect)}</p></div>`).join("")}</div></div>
+    <div class="manual-block"><h4>되물은 뒤 "네"라고 하면 실행</h4>
+      ${table(["명령", "인식 단어", "되묻는 말"], m.asked.map(a => [`<strong>${escapeHtml(a.title)}</strong>`,
+        chips(a.words) + (a.example ? `<p class="meta">예: ${escapeHtml(a.example)}</p>` : ""), escapeHtml(a.question)]))}
+      <p class="meta">대답 · 예: ${chips(m.answers.yes)}</p>
+      <p class="meta">대답 · 아니요: ${chips(m.answers.no)}</p></div>
+    <div class="manual-block"><h4>피킹 로봇 가동 <small>상자 4개 자동 진행</small></h4>
+      ${table(["이렇게 말하기", "인식 단어", "동작"], m.auto.steps.map(s => [`<strong>"${escapeHtml(s.say)}"</strong>`, chips(s.words), escapeHtml(s.effect)]))}
+      <ul>${m.auto.notes.map(n => `<li>${escapeHtml(n)}</li>`).join("")}</ul>
+      <p class="meta">로봇 안내 방송</p><ul class="manual-quotes">${m.auto.announcements.map(a => `<li>"${escapeHtml(a)}"</li>`).join("")}</ul></div>
+    <div class="manual-block"><h4>패킹 데모 <small>문장 그대로</small></h4>
+      ${table(["명령", "말하는 문장"], m.packing.map(p => [`<strong>${escapeHtml(p.title)}</strong>`, chips(p.phrases)]))}
+      <p class="meta">${escapeHtml(m.packing_note)}</p></div>
+    <div class="manual-block"><h4>알아 둘 점</h4><ul>${[m.match_note, ...m.cautions].map(c => `<li>${escapeHtml(c)}</li>`).join("")}</ul></div>
+  </section>`;
 }
 
 async function runCommand(action) {
@@ -582,6 +613,14 @@ const actions = {
     clapArmed = false;
     clapWake.disarm();
     return browserVoice.stop();
+  },
+  async "voice-manual"() {
+    manualOpen = !manualOpen;
+    if (manualOpen && !voiceManual) {
+      const response = await fetch("/api/voice/manual", {cache: "no-store"});
+      if (!response.ok) throw new Error("음성 사용법을 불러오지 못했습니다.");
+      voiceManual = await response.json();
+    }
   },
   async voice() {
     voiceOpen = !voiceOpen;

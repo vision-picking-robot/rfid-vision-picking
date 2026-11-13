@@ -64,7 +64,8 @@ STATUS = {  # result status -> badge text, colors (fg, bg)
 TASK_STATE = {'READY': '대기', 'QUEUED': '대기', 'PICKING': '피킹 중', 'COMPLETED': '완료', 'DEFECTIVE': '불량'}
 ROBOT_STATE = {'IDLE': '대기', 'RUNNING': '동작 중', 'PICKING': '피킹 중', 'SCANNING': '태그 스캔 중',
                'PAUSED': '일시정지', 'ESTOPPED': '비상 정지', 'ERROR': '오류', 'BUSY': '동작 중',
-               'RETURNING_HOME': '홈 복귀 중', 'SAFETY_HOLD': '작업자 접근 · 안전 정지'}
+               'RETURNING_HOME': '홈 복귀 중', 'SAFETY_HOLD': '작업자 접근 · 안전 정지',
+               'GRASP_RETRY': '파지 재시도 중', 'GRASP_FAILED': '파지 실패 · 정지'}
 REPEAT_S = 3.0      # same tag typed again within this time (reader repeating) is skipped
 KEY_IDLE_MS = 1500  # half-typed reader input is dropped after this pause
 
@@ -108,6 +109,7 @@ class ControlPanel:
         self.tags = {}             # tag UID -> product row from the robot PC
         self.current = None        # what the live card shows: dict(uid, task_id, status, ...)
         self.scan_seq = None       # last /api/v1/mobile/status last_scan seq seen
+        self.alert_seq = None      # last operator alert (grasp retry / failure) seq seen
         self.last_uid, self.last_at = None, 0.0
         self.buffer, self.buffer_job = '', None
         self.connected = None
@@ -253,8 +255,18 @@ class ControlPanel:
         pad = self.px(22)
 
         # header
-        head = tk.Frame(r, bg=C['bg'])
+        head = self.head = tk.Frame(r, bg=C['bg'])
         head.pack(fill='x', padx=pad, pady=(self.px(18), self.px(12)))
+        # alert strip (grasp retry / failure): packed under the header only while an alert is showing
+        self.alert_strip = tk.Frame(r, bg=C['danger_soft'], highlightbackground=C['danger'], highlightthickness=1)
+        self.alert_body = tk.Frame(self.alert_strip, bg=C['danger_soft'])
+        self.alert_body.pack(fill='x', padx=self.px(16), pady=self.px(10))
+        self.alert_title = tk.Label(self.alert_body, text='', font=self.f['card'], fg=C['danger'], bg=C['danger_soft'])
+        self.alert_title.pack(anchor='w')
+        self.alert_text = tk.Label(self.alert_body, text='', font=self.f['body'], fg=C['text'], bg=C['danger_soft'],
+                                   anchor='w', justify='left', wraplength=self.px(1100))
+        self.alert_text.pack(anchor='w', fill='x')
+        self.alert_danger, self.alert_job = False, None
         brand = tk.Frame(head, bg=C['bg'])
         brand.pack(side='left')
         tk.Label(brand, text='E0509 VISION PICKING  ·  RFID TAG CONTROL', font=self.f['eyebrow'],
@@ -560,6 +572,8 @@ class ControlPanel:
             color, text = C['danger'], '비상 정지'
         elif status.get('safety_hold'):
             color, text = C['danger'], '작업자 접근 · 안전 정지'
+        elif (status.get('safety_state') or {}).get('state') == 'warning':
+            color, text = C['danger'], '작업자 접근 경고'
         elif status.get('robot_connected'):
             color, text = C['sky'], ROBOT_STATE.get(link.get('state'), link.get('state') or '연결됨')
             if status.get('paused'):
@@ -568,6 +582,7 @@ class ControlPanel:
             color, text = C['muted'], '미연결'
         self._set_dot(self.robot_dot, color)
         self.robot_text.config(text=f'로봇 사이클  {text}', fg=C['danger'] if color == C['danger'] else C['text'])
+        self.apply_alerts(status)
         scan = status.get('last_scan') or {}
         seq = status.get('scan_seq', scan.get('seq'))
         if self.scan_seq is None:
@@ -591,6 +606,46 @@ class ControlPanel:
             self.fields['state'].config(text='완료')
             self.message.config(text='로봇이 상품을 박스에 담았습니다.', fg=C['text2'])
             self.log(f'O 피킹 완료: {self.name.cget("text")}')
+
+    def apply_alerts(self, status):
+        """Grasp retry / failure from the robot cycle: a strip under the header, the log, and a red flash."""
+        alerts = status.get('alerts') or []
+        newest = alerts[-1]['seq'] if alerts else 0
+        if self.alert_seq is None:
+            self.alert_seq = newest  # alerts from before this program started are not shown
+        for alert in [a for a in alerts if a['seq'] > self.alert_seq]:
+            failed = alert.get('kind') == 'grasp_failed'
+            title = '파지 실패 · 로봇 정지' if failed else '파지 실패 · 다시 시도합니다'
+            text = alert.get('message', '') + (' — 물건과 그리퍼를 확인한 뒤 정지 해제' if failed else '')
+            self.log(f'X {title}: {alert.get("message", "")}', 'err')
+            self.show_alert(title, text, danger=failed, hold_ms=None if failed else 8000)
+            self._flash(C['danger'])
+        self.alert_seq = max(self.alert_seq, newest)
+        last = alerts[-1] if alerts else None
+        if self.alert_strip.winfo_manager() and self.alert_danger and self.alert_job is None \
+                and not (status.get('emergency_stopped') and last and last.get('kind') == 'grasp_failed'):
+            self.hide_alert()
+
+    def show_alert(self, title, text, danger, hold_ms=None):
+        self.alert_title.config(text=title, fg=C['danger'] if danger else '#FBBF24')
+        self.alert_text.config(text=text)
+        self.alert_strip.config(bg=C['danger_soft'] if danger else '#2A1F06')
+        for widget in (self.alert_title, self.alert_text, self.alert_body):
+            widget.config(bg=C['danger_soft'] if danger else '#2A1F06')
+        self.alert_danger = danger
+        if not self.alert_strip.winfo_manager():
+            self.alert_strip.pack(fill='x', padx=self.px(22), pady=(0, self.px(10)), after=self.head)
+        if self.alert_job:
+            self.root.after_cancel(self.alert_job)
+            self.alert_job = None
+        if hold_ms:
+            self.alert_job = self.root.after(hold_ms, self.hide_alert)
+
+    def hide_alert(self):
+        if self.alert_job:
+            self.root.after_cancel(self.alert_job)
+        self.alert_job = None
+        self.alert_strip.pack_forget()
 
     def apply_offline(self, error):
         if self.connected is not False:

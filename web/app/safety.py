@@ -100,9 +100,11 @@ class PersonDetector:
 
 class SafetyMonitor:
     def __init__(self, config_path, settings, phase_fn, hold_fn, clock=time.monotonic,
-                 warn_s=WARN_S, clear_s=CLEAR_S):
+                 warn_s=WARN_S, clear_s=CLEAR_S, state_fn=None):
         self.config_path = Path(config_path)
         self.settings, self.phase_fn, self.hold_fn, self.clock = settings, phase_fn, hold_fn, clock
+        self.state_fn = state_fn      # (state, zone, message): the phone shows the warning stage too
+        self._reported = None
         self.warn_s, self.clear_s = warn_s, clear_s
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
@@ -217,7 +219,22 @@ class SafetyMonitor:
             self.hold_fn(True, TEXT["hold"] + (f" (구역 {self.hold_zone})" if self.hold_zone else ""))
         if release:
             self.hold_fn(False, TEXT["resume"])
+        self._report_state(release)
         return self.state
+
+    def _report_state(self, resumed):
+        """Tell the server when the stage changes (warning / hold / clear), with the sentence to show."""
+        if self.state_fn is None or self.state == self._reported:
+            return
+        previous, self._reported = self._reported, self.state
+        message = {"warning": TEXT["warning"], "hold": TEXT["hold"]}.get(self.state)
+        if message is None:  # back to normal: say why
+            message = TEXT["resume"] if resumed else TEXT["warning_cleared"] if previous == "warning" else None
+        zone = self.hold_zone or self.zone
+        try:
+            self.state_fn(self.state, zone, message)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("safety state report failed: %s", exc)
 
     def status(self):
         now = self.clock()

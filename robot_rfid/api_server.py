@@ -125,6 +125,11 @@ class SafetyPhaseInput(StrictInput):
     product: str | None = Field(default=None, max_length=64)
 
 
+class AlertInput(StrictInput):
+    kind: Literal['grasp_retry', 'grasp_failed']
+    message: str = Field(min_length=1, max_length=200)
+
+
 class SafetyHoldInput(StrictInput):
     hold: bool
     message: str | None = Field(default=None, max_length=120)
@@ -231,6 +236,11 @@ def install_rfid_routes(app: FastAPI, db_path=None):
         'safety_phase': None,
         'safety_hold': False,
         'safety_message': None,
+        # warning | hold | clear | idle, as last reported by the safety watch (phone / control program show it)
+        'safety_state': None,
+        # Operator alerts (grasp retry / grasp failed ...), newest last; clients show each seq once.
+        'alerts': [],
+        'alert_seq': 0,
     }
     link_seen = {'monotonic': None}
     app.state.mobile_remote = mobile_state
@@ -426,8 +436,27 @@ def install_rfid_routes(app: FastAPI, db_path=None):
         phase = mobile_state['safety_phase']
         return phase if phase and phase.get('active') and robot_connected() else None
 
+    def set_safety_state(state: str, zone=None, message: str | None = None):
+        """Latest state of the safety watch, for the phone's banner and vibration."""
+        mobile_state['safety_state'] = {'state': state, 'zone': zone, 'message': message,
+                                        'at': datetime.now().astimezone().isoformat()}
+
+    def push_alert(kind: str, message: str, level: str = 'warning'):
+        mobile_state['alert_seq'] += 1
+        entry = {'seq': mobile_state['alert_seq'], 'kind': kind, 'level': level, 'message': message,
+                 'at': datetime.now().astimezone().isoformat()}
+        mobile_state['alerts'] = (mobile_state['alerts'] + [entry])[-10:]
+        record_mobile_event('alert', alert_kind=kind, level=level, message=message)
+        return entry
+
     app.state.set_safety_hold = set_safety_hold
     app.state.safety_phase = safety_phase
+    app.state.set_safety_state = set_safety_state
+
+    @app.post('/api/v1/mobile/alert')
+    async def report_alert(body: AlertInput):
+        level = 'danger' if body.kind in ('grasp_failed',) else 'warning'
+        return {'ok': True, 'alert': push_alert(body.kind, body.message, level)}
 
     @app.post('/api/v1/mobile/safety-phase')
     async def report_safety_phase(body: SafetyPhaseInput):

@@ -582,6 +582,21 @@ MOBILE_REMOTE_HTML = """<!DOCTYPE html>
     opacity: 1;
     transform: translateX(-50%) translateY(0);
   }
+
+  /* Safety / grasp alert: stays at the top of the screen while it matters (sticky, readable in both themes) */
+  .alert-banner {
+    position: sticky; top: 8px; z-index: 90; display: grid; gap: 3px;
+    padding: 12px 14px; border-radius: 14px; border: 1px solid transparent;
+    font-size: 14px; font-weight: 700; line-height: 1.4; box-shadow: 0 10px 24px -10px rgba(0, 0, 0, 0.55);
+  }
+  .alert-banner[hidden] { display: none; }
+  .alert-banner small { font-size: 12px; font-weight: 500; opacity: 0.9; }
+  .alert-banner.warning { background: #FEF3C7; border-color: #D97706; color: #78350F; }
+  .alert-banner.danger { background: #FEE2E2; border-color: #DC2626; color: #7F1D1D; }
+  .alert-banner.ok { background: #E0F2FE; border-color: #0284C7; color: #0C4A6E; }
+  html[data-theme="dark"] .alert-banner.warning { background: #3A2A08; border-color: #A16207; color: #FDE68A; }
+  html[data-theme="dark"] .alert-banner.danger { background: #3A1518; border-color: #B91C1C; color: #FECACA; }
+  html[data-theme="dark"] .alert-banner.ok { background: #0B2A40; border-color: #38BDF8; color: #F8FAFC; }
 </style>
 </head>
 <body>
@@ -600,6 +615,8 @@ MOBILE_REMOTE_HTML = """<!DOCTYPE html>
       <div class="status-pill" id="robotStateBadge">STANDBY</div>
     </div>
   </header>
+
+  <div class="alert-banner" id="alertBanner" role="alert" aria-live="assertive" hidden></div>
 
   <!-- 00. Last tag -->
   <section class="glass-card">
@@ -836,6 +853,91 @@ MOBILE_REMOTE_HTML = """<!DOCTYPE html>
     }
     clearTimeout(window.__toastTimer);
     window.__toastTimer = setTimeout(() => el.classList.remove('show'), 2400);
+  }
+
+  // ---- Alerts: work-area safety (warning -> hold -> resume) and grasp retry / failure -------------
+  // Vibrates the phone for each new alert; the banner stays up while a warning or hold lasts.
+  const BUZZ = {
+    warning: [160, 90, 160, 90, 160],          // someone near the zone: 3 short pulses
+    hold: [500, 140, 500],                      // robot stopped for safety
+    resume: [90],                               // zone clear, robot carries on
+    grasp_retry: [140, 90, 140],                // second try after an empty close
+    grasp_failed: [400, 120, 400, 120, 400],    // stopped: look at the gripper
+  };
+  let alertSeq = null, safetyShown = null, alertHideTimer = null;
+
+  function buzz(pattern) {
+    if (!pattern) return;
+    if (navigator.vibrate) { try { navigator.vibrate(pattern); } catch (_) {} }
+    const bridge = window.GalaxyNativeBridge;  // APK: vibrate(ms) is one buzz, so play each pulse on its own
+    if (bridge) {
+      let at = 0;
+      pattern.forEach((ms, i) => {
+        if (i % 2 === 0) setTimeout(() => { try { bridge.vibrate(ms); } catch (_) {} }, at);
+        at += ms;
+      });
+    }
+  }
+
+  function showAlert(level, title, detail, holdMs) {
+    const el = document.getElementById('alertBanner');
+    el.className = 'alert-banner ' + level;
+    el.replaceChildren();
+    const strong = document.createElement('span'); strong.textContent = title; el.append(strong);
+    if (detail) { const small = document.createElement('small'); small.textContent = detail; el.append(small); }
+    el.hidden = false;
+    clearTimeout(alertHideTimer);
+    alertHideTimer = holdMs ? setTimeout(() => { el.hidden = true; alertHideTimer = null; }, holdMs) : null;
+  }
+
+  function hideAlert() {
+    clearTimeout(alertHideTimer);
+    alertHideTimer = null;
+    document.getElementById('alertBanner').hidden = true;
+  }
+
+  function renderAlerts(data) {
+    // 1) grasp retry / failure, reported by the robot cycle (each seq once; the first poll only catches up)
+    const alerts = data.alerts || [];
+    const newest = alerts.length ? alerts[alerts.length - 1].seq : 0;
+    if (alertSeq === null) alertSeq = newest;
+    for (const a of alerts.filter(x => x.seq > alertSeq)) {
+      if (a.kind === 'grasp_failed') {
+        showAlert('danger', '파지 실패 · 로봇 정지', a.message + ' — 물건과 그리퍼를 확인한 뒤 [정지 해제]를 누르세요.', 0);
+        buzz(BUZZ.grasp_failed);
+      } else {
+        showAlert('warning', '파지 실패 · 다시 시도합니다', a.message, 8000);
+        buzz(BUZZ.grasp_retry);
+      }
+    }
+    alertSeq = Math.max(alertSeq, newest);
+    // the failure banner stays until the stop is released
+    const failedStays = data.emergency_stopped && alerts.length && alerts[alerts.length - 1].kind === 'grasp_failed';
+
+    // 2) work-area safety watch (warning stage, hold, resume), reported by the web server
+    const s = data.safety_state;
+    const state = s ? s.state : null;
+    if (state !== safetyShown) {
+      const first = safetyShown === null;
+      const zone = s && s.zone ? ` · 구역 ${s.zone}` : '';
+      if (state === 'warning') {
+        showAlert('warning', '작업자 접근 경고' + zone, '3초 안에 벗어나지 않으면 로봇이 정지합니다', 0);
+        if (!first) buzz(BUZZ.warning);
+      } else if (state === 'hold') {
+        showAlert('danger', '작업자 접근 · 로봇 안전 정지' + zone, '작업자가 구역에서 벗어나면 자동으로 다시 가동합니다', 0);
+        if (!first) buzz(BUZZ.hold);
+      } else if (!first && safetyShown === 'hold') {
+        showAlert('ok', '안전구역 확보', '로봇을 다시 가동합니다', 5000);
+        buzz(BUZZ.resume);
+      } else if (!first && safetyShown === 'warning') {
+        hideAlert();
+      }
+      safetyShown = state;
+    }
+    if (!failedStays && (state === null || state === 'idle' || state === 'clear')) {
+      const el = document.getElementById('alertBanner');
+      if (!el.hidden && el.classList.contains('danger') && !alertHideTimer) hideAlert();
+    }
   }
 
   // ---- Work area: 4 taught corners (BASE mm) drawn to scale, 15x15 cells, item outlines ----
@@ -1307,6 +1409,7 @@ MOBILE_REMOTE_HTML = """<!DOCTYPE html>
       badge.textContent = data.robot_state;
       updateScanModeUI(data.scan_mode);
       renderRobotLink(data);
+      renderAlerts(data);
 
       const reported = data.work_items;
       if (area && JSON.stringify(reported || null) !== JSON.stringify(area.reported_items || null)) {

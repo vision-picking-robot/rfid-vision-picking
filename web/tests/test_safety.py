@@ -52,6 +52,21 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(self.holds[-1], (False, "안전구역 확보. 로봇을 다시 가동합니다."))
         self.assertEqual(self.kinds(), ["warning", "hold", "resume"])
 
+    def test_stage_changes_are_reported_for_the_phone(self):
+        reported = []
+        self.m.state_fn = lambda state, zone, message: reported.append((state, zone, message))
+        self.phase = {"active": True, "zone": 2}
+        person = [[0.6, 0.1, 0.8, 0.45, 0.9]]
+        self.tick(0.5, [])
+        self.tick(1.0, person)
+        self.tick(2.5, person)
+        self.tick(4.0, [])
+        stages = [s for s, _, _ in reported]
+        self.assertEqual(stages, ["clear", "warning", "hold", "clear"])  # each change once, not every step
+        self.assertIn("3초", reported[1][2])
+        self.assertEqual(reported[2][1], 2)
+        self.assertEqual(reported[3][2], "안전구역 확보. 로봇을 다시 가동합니다.")
+
     def test_no_warning_while_carrying_to_the_box_or_idle(self):
         person_everywhere = [[0.0, 0.0, 1.0, 1.0, 0.9]]
         self.phase = None  # carrying to the box / idle
@@ -103,6 +118,7 @@ class ApiTests(unittest.TestCase):
                     monitor.step()
                     __import__("time").sleep(0.06)
                 self.assertTrue(c.get("/api/v1/mobile/status").json()["safety_hold"])
+                self.assertEqual(c.get("/api/v1/mobile/status").json()["safety_state"]["state"], "hold")
                 c.post("/api/safety/simulate", json={"person": False})
                 for _ in range(16):
                     monitor.step()

@@ -1,3 +1,5 @@
+import "./robot-alerts.js";  // grasp retry / failure banner on every page
+
 export const destinations = [
   { id: "dashboard", label: "대시보드", icon: "layout-dashboard" },
   { id: "orders", label: "주문·배송", icon: "package-check" },

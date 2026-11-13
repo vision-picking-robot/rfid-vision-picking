@@ -257,6 +257,87 @@ def test_safety_hold_stops_the_approach_and_redoes_the_move_after_the_zone_is_cl
     assert httpx.get(live_api + '/api/v1/mobile/status').json()['safety_phase']['active'] is False
 
 
+def mock_hand(monkeypatch, script):
+    """The mock gripper closes on an object unless the script says this close is empty (False)."""
+    real_init = cycle.MockRaw.__init__
+
+    def init(self, poses):
+        real_init(self, poses)
+        self.grasp_script = list(script)
+    monkeypatch.setattr(cycle.MockRaw, '__init__', init)
+
+
+def alerts(url):
+    return httpx.get(url + '/api/v1/mobile/status').json()['alerts']
+
+
+def test_empty_close_is_retried_once_and_the_cycle_carries_on(live_api, tmp_path, monkeypatch):
+    mock_hand(monkeypatch, [False, True])  # first close empty, the second one holds
+    log = tmp_path / 'retry.jsonl'
+    t, box = run_cycle(['--api', live_api, '--remote-rfid', '--cycles', '1', '--wait-timeout', '30', '--log', str(log)])
+    wait_for(lambda: any(e['event'] == 'waiting_for_tag' for e in events(log)))
+    httpx.post(live_api + '/api/v1/scan-event', json={'uid': '0B71E65D'}).raise_for_status()
+    t.join(30)
+    evs = events(log)
+    names = [e.get('name') for e in evs]
+    assert box['rc'] == 0 and any(e['event'] == 'cycle_ok' and e['holding'] for e in evs)
+    assert [e['holding'] for e in evs if e['event'] == 'grasp'] == [False, True]
+    assert any(e['event'] == 'grasp_retry' and e['attempt'] == 1 for e in evs)
+    # open, rise straight up, then approach the object again before the second close
+    assert names.index('retry_rise') < len(names) - names[::-1].index('approach') - 1
+    assert names.count('approach') == 2 and not any(e['event'] == 'grasp_failed' for e in evs)
+    assert [a['kind'] for a in alerts(live_api)] == ['grasp_retry']  # phone / web / control program are told
+
+
+def test_two_empty_closes_stop_alert_and_wait_for_the_release(live_api, tmp_path, monkeypatch):
+    mock_hand(monkeypatch, [False, False])
+    log = tmp_path / 'fail.jsonl'
+    t, box = run_cycle(['--api', live_api, '--remote-rfid', '--cycles', '2', '--wait-timeout', '30', '--log', str(log)])
+    wait_for(lambda: any(e['event'] == 'waiting_for_tag' for e in events(log)))
+    wait_for(lambda: httpx.get(live_api + '/api/v1/mobile/status').json()['robot_connected'])
+    httpx.post(live_api + '/api/v1/scan-event', json={'uid': '0B71E65D'}).raise_for_status()
+    wait_for(lambda: any(e['event'] == 'estop_hold' and e.get('grasp_failed') for e in events(log)))
+    wait_for(lambda: (httpx.get(live_api + '/api/v1/mobile/status').json().get('robot_link') or {}).get('state') == 'GRASP_FAILED')
+    status = httpx.get(live_api + '/api/v1/mobile/status').json()
+    assert status['emergency_stopped'] and status['robot_link']['state'] == 'GRASP_FAILED'
+    assert '파지 실패' in status['robot_link']['message'] and '정지 해제' in status['robot_link']['message']
+    assert [a['kind'] for a in alerts(live_api)] == ['grasp_retry', 'grasp_failed']
+    assert alerts(live_api)[-1]['level'] == 'danger'
+    time.sleep(1.2)  # it holds: no further motion until the operator releases the stop
+    held = len(events(log))
+    time.sleep(1.0)
+    assert len(events(log)) == held and t.is_alive()
+    assert httpx.get(live_api + '/api/v1/current-task').json()['task'] is None  # the task was marked DEFECTIVE
+    press(live_api, 'reset_stop')
+    wait_for(lambda: any(e['event'] == 'estop_released' for e in events(log)))
+    wait_for(lambda: sum(e['event'] == 'waiting_for_tag' for e in events(log)) >= 2)
+    after = [e.get('name') for e in events(log)[[e['event'] for e in events(log)].index('estop_released'):]]
+    assert 'gripper_open' in after  # the fingers are opened before it rises and goes home
+    httpx.post(live_api + '/api/v1/scan-event', json={'uid': '0B71E65D'}).raise_for_status()
+    t.join(30)
+    evs = events(log)
+    assert box['rc'] == 0 and any(e['event'] == 'cycle_ok' for e in evs)  # the next box works (mock hand holds again)
+
+
+def test_phone_page_shows_safety_and_grasp_alerts_with_vibration():
+    from robot_rfid.mobile_remote_ui import MOBILE_REMOTE_HTML as html  # noqa: N811
+    assert 'id="alertBanner"' in html and 'renderAlerts(data)' in html
+    assert 'safety_state' in html and 'data.alerts' in html
+    for kind in ('warning', 'hold', 'resume', 'grasp_retry', 'grasp_failed'):
+        assert f'{kind}:' in html.split('const BUZZ')[1].split('};')[0]
+    assert 'function buzz(' in html and 'bridge.vibrate(ms)' in html
+
+
+def test_alert_endpoint_keeps_ten_and_rejects_unknown_kinds(client):
+    assert client.post('/api/v1/mobile/alert', json={'kind': 'bogus', 'message': 'x'}).status_code == 422
+    for i in range(12):
+        assert client.post('/api/v1/mobile/alert', json={'kind': 'grasp_retry', 'message': f'try {i}'}).status_code == 200
+    kept = client.get('/api/v1/mobile/status').json()['alerts']
+    assert [a['seq'] for a in kept] == list(range(3, 13)) and kept[-1]['message'] == 'try 11'
+    failed = client.post('/api/v1/mobile/alert', json={'kind': 'grasp_failed', 'message': '파지 실패'}).json()
+    assert failed['alert']['level'] == 'danger'
+
+
 def test_phone_estop_while_paused_stops_the_cycle(live_api, tmp_path):
     log = tmp_path / 'estop.jsonl'
     t, box = run_cycle(['--api', live_api, '--remote-trigger', '--cycles', '1', '--wait-timeout', '30',

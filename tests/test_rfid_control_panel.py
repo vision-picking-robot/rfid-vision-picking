@@ -181,6 +181,38 @@ def test_layout_fits_every_laptop_screen(tk_root, screen):
         gc.collect()
 
 
+def test_grasp_alerts_show_a_strip_and_do_not_replay_old_ones(panel):
+    old = {'seq': 1, 'kind': 'grasp_retry', 'message': '스팸 파지에 실패해 다시 시도합니다 (1/1)'}
+    status = {'robot_connected': True, 'robot_link': {'state': 'IDLE'}, 'scan_seq': 1, 'last_scan': {'seq': 1},
+              'alerts': [old]}
+    panel.apply_status(status)
+    panel.root.update()
+    assert not panel.alert_strip.winfo_manager()  # alerts from before the program started are not shown
+    failed = {'seq': 2, 'kind': 'grasp_failed', 'message': '파지 실패: 2번 시도했지만 빈 채로 닫혔습니다 (canned_meat)'}
+    status.update(alerts=[old, failed], emergency_stopped=True)
+    panel.apply_status(status)
+    panel.root.update()
+    assert panel.alert_strip.winfo_manager() == 'pack' and '파지 실패 · 로봇 정지' in panel.alert_title.cget('text')
+    assert '정지 해제' in panel.alert_text.cget('text')
+    assert '파지 실패' in panel.log_box.get('1.0', 'end')
+    status['emergency_stopped'] = True
+    panel.apply_status(status)  # still stopped: the failure strip stays
+    panel.root.update()
+    assert panel.alert_strip.winfo_manager() == 'pack'
+    status['emergency_stopped'] = False
+    panel.apply_status(status)  # released: it goes away
+    panel.root.update()
+    assert not panel.alert_strip.winfo_manager()
+    retry = {'seq': 3, 'kind': 'grasp_retry', 'message': '스팸 파지에 실패해 다시 시도합니다 (1/1)'}
+    status.update(alerts=[old, failed, retry])
+    panel.apply_status(status)
+    panel.root.update()
+    assert panel.alert_strip.winfo_manager() == 'pack' and '다시 시도' in panel.alert_title.cget('text')
+    status.update(safety_state={'state': 'warning'}, alerts=[])
+    panel.apply_status(status)
+    assert '작업자 접근 경고' in panel.robot_text.cget('text')
+
+
 def test_offline_robot_pc_is_shown(panel):
     panel.apply_offline('connection refused')
     assert '연결 실패' in panel.server_text.cget('text') and panel.connected is False

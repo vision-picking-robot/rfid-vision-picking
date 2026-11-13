@@ -33,6 +33,10 @@ from vision_picking.pick_plane import Calibration, DEFAULT_GRID_COLS, DEFAULT_GR
 TAGS = {'0B71E55D': ('snack_pepero', 1), '0B71E75D': ('beverage_pet', 2), '0B71E65D': ('canned_meat', 3),
         '0B71ED5D': ('wet_tissue', 4)}
 OPEN_MAX = 10
+
+
+class GraspFailed(RuntimeError):
+    """The gripper closed empty on every try: stop, tell the operator, and wait for a release."""
 JOINT_TOL = 1.0
 POS_TOL = 2.0
 # In-air waypoints (approach above / lift out of the grasp) near the far, stretched edge of the work
@@ -106,6 +110,7 @@ class MockRaw:
         self.posj = [0.0, 0.0, 90.0, 0.0, 90.0, 0.0]
         self.posx = self.fkin(self.posj, 0)
         self.position = 0
+        self.grasp_script = []
 
     def check_ready(self):
         return None
@@ -131,6 +136,13 @@ class MockRaw:
         return 0
 
     def grip(self, target, current=None):
+        """Mock hand. A close (target >= 700) holds an object unless `grasp_script` says otherwise:
+        each entry is one close, True = object in the hand, False = closes empty (tests use this)."""
+        if target >= 700 and current is not None:
+            hold = self.grasp_script.pop(0) if self.grasp_script else True
+            self.position = 520 if hold else target
+            return dict(code=1, result='ok', voltage=24.1, position_pulses=self.position,
+                        current=int(current * 0.95) if hold else 0, moving=0)
         if target >= 0:
             self.position = target
         return dict(code=1, result='ok', voltage=24.1, position_pulses=self.position, current=0, moving=0)
@@ -302,6 +314,30 @@ class MobileRemote(threading.Thread):
         self.safety = threading.Event()  # set while the work-area safety watch holds the robot
         self.safety_count = 0            # holds so far: a move running across a new hold is redone
 
+    def alert(self, kind, message):
+        """Operator alert for the phone / web / control program: POST /api/v1/mobile/alert (best effort)."""
+        import httpx
+        self.log('operator_alert', kind=kind, message=message)
+        try:
+            httpx.post(f'{self.api}/api/v1/mobile/alert', json={'kind': kind, 'message': message}, timeout=2)
+        except Exception as error:  # noqa: BLE001
+            self.log('alert_failed', message=str(error))
+        if kind == 'grasp_retry':
+            self.report('GRASP_RETRY', message)
+
+    def fail_stop(self, message):
+        """After a final grasp failure: put the whole system in the E-stop state so the operator must
+        look and press [정지 해제] (phone / web / voice) before the robot moves again."""
+        import httpx
+        try:
+            httpx.post(f'{self.api}/api/v1/mobile/control', json={'command': 'emergency_stop'}, timeout=3)
+        except Exception as error:  # noqa: BLE001
+            self.log('fail_stop_post_failed', message=str(error))
+        self._grace_until = time.monotonic() + 2.0  # a status poll that started before the POST must not undo it
+        self.estop_active = True
+        self.tripped.set()
+        self.report('GRASP_FAILED', f'{message} — 로봇을 정지했습니다. 물건과 그리퍼를 확인한 뒤 [정지 해제]를 누르세요.')
+
     def safety_phase(self, active, zone=None, product=None):
         """Tell the safety watch whether the robot is heading into an object's zone (best effort)."""
         import httpx
@@ -338,7 +374,7 @@ class MobileRemote(threading.Thread):
         """Update pause/E-stop flags and queue new commands from one status poll."""
         if isinstance(status, bool):  # legacy poll result: E-stop flag only
             status = {'emergency_stopped': status}
-        self.estop_active = bool(status.get('emergency_stopped'))
+        self.estop_active = bool(status.get('emergency_stopped')) or time.monotonic() < getattr(self, '_grace_until', 0.0)
         if status.get('emergency_stopped') and not self.tripped.is_set():
             self.tripped.set()
             self.log('mobile_emergency_stop', action='move_stop')
@@ -823,7 +859,7 @@ class Cycle:
         self._loaded, self._to_pick = True, False  # descend, grasp, carry and place at --load-speed
         self.l('descend', grasp, self.args.dvel)
 
-    def grip_object(self):
+    def _close_gripper(self):
         item = (self.products.get(getattr(self, '_product', None)) or {}).get('real') or {}
         limit = int(item.get('grip_current_ma') or getattr(self.args, 'grip_current', 150))
         closed = self.grip('grip', 740, lambda p: p >= 0, current=limit, settle_s=4.0)
@@ -833,7 +869,38 @@ class Cycle:
             closed['position_pulses'] < 735 and closed['current'] >= 0.8 * limit)
         self.log('grasp', product=self._product, holding=self.holding, position=closed['position_pulses'],
                  current=closed['current'], current_limit=limit, note='object detected' if self.holding else 'empty close (no object)')
-        if self.args.require_object and not self.holding:
+
+    def _alert(self, kind, message):
+        """Tell the phone, the web and the control program (best effort)."""
+        remote = getattr(self, 'estop', None)
+        if remote is not None and hasattr(remote, 'alert'):
+            remote.alert(kind, message)
+
+    def _regrasp(self, attempt, retries):
+        """Empty close: open, rise straight up off the spot, look for the object again, approach again."""
+        product = getattr(self, '_product', None)
+        name = (self.products.get(product) or {}).get('name') or product
+        self.log('grasp_retry', product=product, attempt=attempt, retries=retries)
+        self._alert('grasp_retry', f'{name} 파지에 실패해 다시 시도합니다 ({attempt}/{retries})')
+        self._loaded, self._to_pick = False, True
+        self.grip('gripper_open', 0, lambda p: p <= OPEN_MAX)
+        self.l('retry_rise', self._approach, tol=WAYPOINT_TOL)
+        self.approach(self.detect(product))  # the object may have been nudged: measure it again
+
+    def grip_object(self):
+        retries = max(0, int(getattr(self.args, 'grasp_retries', 0) or 0))
+        for attempt in range(retries + 1):
+            self._close_gripper()
+            if self.holding:
+                return
+            if attempt < retries:
+                self._regrasp(attempt + 1, retries)
+        if retries:
+            message = f"파지 실패: {retries + 1}번 시도했지만 그리퍼가 빈 채로 닫혔습니다 ({getattr(self, '_product', '')})"
+            self.log('grasp_failed', product=getattr(self, '_product', None), attempts=retries + 1)
+            self._alert('grasp_failed', message)
+            raise GraspFailed(message)
+        if self.args.require_object:
             raise RuntimeError('No object in the gripper (empty close)')
 
     def retract(self):
@@ -1125,7 +1192,11 @@ def main(argv=None):
                         help='speed factor from the descend to the grasp until the release (holding the object)')
     parser.add_argument('--scan-wait', type=float, default=10.0,
                         help='[리더기 스캔 출동]: seconds to wait at the reader for the Windows bridge to send a tag')
-    parser.add_argument('--require-object', action='store_true', help='fail when the gripper closes empty')
+    parser.add_argument('--require-object', action='store_true',
+                        help='fail when the gripper closes empty (only with --grasp-retries 0; retries always fail the cycle)')
+    parser.add_argument('--grasp-retries', type=int, default=1,
+                        help='empty close: open, rise, re-detect and try again this many times; still empty -> '
+                             'stop, alert phone/web/control program and wait for [정지 해제] (0 = old behaviour)')
     parser.add_argument('--remote-rfid', action='store_true',
                         help='with --api: wait for tasks queued by another PC (POST /api/v1/scan-event) instead of scanning')
     parser.add_argument('--wait-timeout', type=float, default=0, help='remote mode: seconds to wait per task, 0 = forever')
@@ -1183,18 +1254,25 @@ def main(argv=None):
                 try:
                     run_remote_task(runner, args, log, cycle)
                 except RuntimeError as error:
-                    if not (watch is not None and watch.tripped.is_set()):
+                    grasp_failed = isinstance(error, GraspFailed) and watch is not None
+                    if not (watch is not None and watch.tripped.is_set()) and not grasp_failed:
                         raise
-                    # E-stop: motion already stopped (task marked DEFECTIVE if it was running).
-                    # Hold until it is released, then recover and wait for the next task.
-                    log('estop_hold', cycle=cycle, message=str(error))
+                    # E-stop (or a grasp that failed on every try): motion already stopped (task marked
+                    # DEFECTIVE if it was running). Hold until it is released, then recover and wait
+                    # for the next task.
+                    log('estop_hold', cycle=cycle, message=str(error), grasp_failed=grasp_failed)
                     watch.busy = True
-                    watch.report('ESTOPPED', '비상 정지 — 정지 해제(또는 음성 "작업 재개")를 기다립니다.')
+                    if grasp_failed:
+                        watch.fail_stop(str(error))
+                    else:
+                        watch.report('ESTOPPED', '비상 정지 — 정지 해제(또는 음성 "작업 재개")를 기다립니다.')
                     if not watch.wait_reset():
                         raise
                     log('estop_released', cycle=cycle)
                     watch.report('RUNNING', '정지 해제 — 홈으로 복귀합니다.')
                     runner.raw.check_ready()
+                    if grasp_failed:  # the fingers are still closed on nothing
+                        runner.grip('gripper_open', 0, lambda p: p <= OPEN_MAX)
                     runner.recover_home()
                     watch.busy = False
                     continue
