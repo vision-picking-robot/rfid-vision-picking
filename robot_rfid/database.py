@@ -64,7 +64,9 @@ SEEDS = [
     ('0B71ED5D', 'SAN-WIPES-100', '물티슈', 'SANITARY', 3, 'wet_wipes', '2026-11-02 16:20:00', '2028-11-01 23:59:59', 2200, 'BOX-04'),
 ]
 SEED_TAGS = SEEDS
-# Tags once seeded but not on any real product (the plush toy has no tag); initialize() drops them from old DBs.
+# Tags that must never map to a product: the plush toy's tag is kept unregistered on purpose (demo of an
+# unregistered tag). initialize() drops them from old DBs, and resolve_uid() reports them as unknown before any
+# fuzzy matching (0B71EC5D only misses the other tags by one character).
 REMOVED_SEED_TAGS = ('0B71EC5D',)
 # SKU codes renamed to match the real items (old -> new); initialize() renames them in old DBs.
 # yolo_class_name stays 'snack_pepero': it is the key the configs, zones and poses use.
@@ -169,6 +171,8 @@ class Database:
 
     def resolve_uid(self, raw):
         """Full registered UID for a full or partial reader value (see match_uid)."""
+        if clean_uid(raw) in REMOVED_SEED_TAGS:
+            raise KeyError(f'unregistered tag {clean_uid(raw)}')
         with self.connect() as db:
             known = [r['tag_uid'] for r in db.execute('SELECT tag_uid FROM product_tag_mappings')]
         return match_uid(raw, known)

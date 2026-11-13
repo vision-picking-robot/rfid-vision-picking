@@ -21,7 +21,7 @@ def test_last_scan_follows_accepted_and_rejected_tags(tmp_path):
         assert scan['target_box_id'] == 'BOX-01' and scan['task_id'] and scan['source'] == 'remote_reader'
         first = scan['seq']
 
-        assert client.post('/api/v1/scan-event', json={'uid': '0B71EC5D'}).status_code == 409  # retired toy tag
+        assert client.post('/api/v1/scan-event', json={'uid': '0B71EC5D'}).status_code == 404  # unregistered toy tag
         scan = client.get('/api/v1/last-scan').json()['last_scan']
         assert not scan['accepted'] and scan['raw_uid'] == '0B71EC5D' and scan['seq'] == first + 1
 

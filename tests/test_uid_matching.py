@@ -69,7 +69,7 @@ def test_api_queues_partial_uid_and_rejects_ambiguous(tmp_path):
         assert body['uid'] == '0B71E75D' and body['raw_uid'] == 'E75D' and body['created'] is True
         assert body['task']['tag_uid'] == '0B71E75D'
         ambiguous = client.post('/api/v1/scan-event', json={'uid': '0B71'})
-        assert ambiguous.status_code == 409 and 'ambiguous' in ambiguous.json()['detail']
+        assert ambiguous.status_code == 409 and '여러 태그와 일부만 일치' in ambiguous.json()['detail']
         assert client.post('/api/v1/scan-event', json={'uid': 'E7'}).status_code == 422
 
 
@@ -86,8 +86,23 @@ def test_retired_plush_toy_tag_is_dropped_from_an_existing_db(tmp_path):
     database = Database(path)
     assert database.product('0B71EC5D') is None
     assert [p['tag_uid'] for p in database.products()] == KNOWN
-    with pytest.raises((KeyError, ValueError)):  # no longer registered: rejected, never matched to a product
-        database.resolve_uid('0B71EC5D')
+    for raw in ('0B71EC5D', '0b 71 ec 5d'):  # unregistered on purpose, never fuzzy-matched to a product
+        with pytest.raises(KeyError, match='unregistered'):
+            database.resolve_uid(raw)
+
+
+def test_plush_toy_tag_reads_as_unregistered_everywhere(tmp_path):
+    app = FastAPI()
+    install_rfid_routes(app, tmp_path / 'rfid.db')
+    with TestClient(app) as client:
+        tag = client.get('/api/v1/tags/0B71EC5D')
+        assert tag.status_code == 404 and tag.json()['detail'] == '등록되지 않은 태그입니다 (0B71EC5D)'
+        scan = client.post('/api/v1/scan-event', json={'uid': '0B71EC5D'})
+        assert scan.status_code == 404
+        last = client.get('/api/v1/last-scan').json()['last_scan']
+        assert not last['accepted'] and last['error'] == '등록되지 않은 태그입니다' and last['raw_uid'] == '0B71EC5D'
+        assert client.get('/api/v1/current-task').json()['task'] is None  # nothing for the robot to pick
+        assert '0B71EC5D' not in [t['tag_uid'] for t in client.get('/api/v1/tags').json()['tags']]
 
 
 def test_seed_display_names_follow_the_real_items(tmp_path):

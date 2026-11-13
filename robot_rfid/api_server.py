@@ -278,9 +278,10 @@ def install_rfid_routes(app: FastAPI, db_path=None):
         try:
             return await asyncio.to_thread(db.resolve_uid, raw)
         except KeyError as exc:
-            raise HTTPException(404, f'Unknown tag: {exc.args[0] if exc.args else raw}') from exc
+            raise HTTPException(404, f'등록되지 않은 태그입니다 ({clean_uid(raw)})') from exc
         except ValueError as exc:
-            raise HTTPException(409, str(exc)) from exc
+            raise HTTPException(409, f'등록되지 않은 태그입니다 ({clean_uid(raw)}: 여러 태그와 일부만 일치, '
+                                     f'{str(exc).split("matches ")[-1]})') from exc
 
     @app.get('/api/v1/tags/{uid}')
     async def get_tag(uid: str):
