@@ -119,6 +119,17 @@ class WorkItemsInput(StrictInput):
     items: list[WorkItemReport] = Field(max_length=16)
 
 
+class SafetyPhaseInput(StrictInput):
+    active: bool                      # True from the approach to the grasp, False once it lifts for the box
+    zone: int | None = Field(default=None, ge=1, le=4)
+    product: str | None = Field(default=None, max_length=64)
+
+
+class SafetyHoldInput(StrictInput):
+    hold: bool
+    message: str | None = Field(default=None, max_length=120)
+
+
 ROBOT_LINK_TIMEOUT_S = 3.0
 # Commands only the robot cycle can carry out; the phone is told when no cycle is listening.
 ROBOT_COMMANDS = ('start', 'pause', 'resume', 'home', 'scan_dispatch')
@@ -215,6 +226,11 @@ def install_rfid_routes(app: FastAPI, db_path=None):
         # Last report from the robot cycle; robot_connected is derived from its age.
         'robot_link': None,
         'work_items': None,
+        # Work-area safety (web/app/safety.py watches a webcam): the robot cycle reports when it is
+        # heading into an object's zone to pick it; a person near that zone holds the robot.
+        'safety_phase': None,
+        'safety_hold': False,
+        'safety_message': None,
     }
     link_seen = {'monotonic': None}
     app.state.mobile_remote = mobile_state
@@ -394,6 +410,34 @@ def install_rfid_routes(app: FastAPI, db_path=None):
             'robot_connected': robot_connected(),
             'current_task': task,
         }
+
+    def set_safety_hold(hold: bool, message: str | None = None):
+        """Hold (or release) the robot cycle for work-area safety; it stops at once and redoes the move."""
+        if bool(hold) == mobile_state['safety_hold']:
+            mobile_state['safety_message'] = message or mobile_state['safety_message']
+            return False
+        mobile_state['safety_hold'] = bool(hold)
+        mobile_state['safety_message'] = message
+        record_mobile_event('safety_hold' if hold else 'safety_clear', message=message)
+        return True
+
+    def safety_phase():
+        """The zone the robot is picking from right now, or None (carrying to the box, idle, disconnected)."""
+        phase = mobile_state['safety_phase']
+        return phase if phase and phase.get('active') and robot_connected() else None
+
+    app.state.set_safety_hold = set_safety_hold
+    app.state.safety_phase = safety_phase
+
+    @app.post('/api/v1/mobile/safety-phase')
+    async def report_safety_phase(body: SafetyPhaseInput):
+        mobile_state['safety_phase'] = {**body.model_dump(), 'at': datetime.now().astimezone().isoformat()}
+        return {'ok': True, 'safety_hold': mobile_state['safety_hold']}
+
+    @app.post('/api/v1/mobile/safety')
+    async def report_safety(body: SafetyHoldInput):
+        changed = set_safety_hold(body.hold, body.message)
+        return {'ok': True, 'changed': changed, 'safety_hold': mobile_state['safety_hold']}
 
     @app.post('/api/v1/mobile/robot-state')
     async def robot_state_report(body: RobotLinkInput):

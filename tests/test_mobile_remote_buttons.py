@@ -223,6 +223,40 @@ def test_phone_scan_dispatch_without_a_tag_queues_nothing(live_api, tmp_path):
     assert httpx.get(live_api + '/api/v1/current-task').json()['task'] is None
 
 
+def test_safety_hold_stops_the_approach_and_redoes_the_move_after_the_zone_is_clear(live_api, tmp_path, monkeypatch):
+    log = tmp_path / 'safety.jsonl'
+    real_movel = cycle.MockRaw.movel
+
+    def slow_movel(self, *args):  # a move takes a while, so the hold lands mid-move
+        time.sleep(0.4)
+        return real_movel(self, *args)
+    monkeypatch.setattr(cycle.MockRaw, 'movel', slow_movel)
+    t, box = run_cycle(['--api', live_api, '--remote-trigger', '--cycles', '1', '--wait-timeout', '30',
+                        '--log', str(log)])
+    wait_for(lambda: any(e['event'] == 'waiting_for_phone' for e in events(log)))
+    press(live_api, 'start')
+    wait_for(lambda: any(e['event'] == 'safety_phase' and e['active'] for e in events(log)))
+    phase = httpx.get(live_api + '/api/v1/mobile/status').json()['safety_phase']
+    assert phase['active'] is True
+    httpx.post(live_api + '/api/v1/mobile/safety', json={'hold': True, 'message': '작업자 접근 · 로봇 정지'})
+    wait_for(lambda: any(e['event'] == 'move_stop_sent' and e.get('source') == 'safety' for e in events(log)))
+    wait_for(lambda: httpx.get(live_api + '/api/v1/mobile/status').json()['robot_link']['state'] == 'SAFETY_HOLD')
+    time.sleep(0.6)  # let any move in flight return
+    held = len(events(log))
+    time.sleep(1.0)
+    assert len(events(log)) == held, 'robot moved during the safety hold'
+    assert t.is_alive()
+    httpx.post(live_api + '/api/v1/mobile/safety', json={'hold': False, 'message': '안전구역 확보. 로봇을 다시 가동합니다.'})
+    t.join(30)
+    evs = events(log)
+    names = [e['event'] for e in evs]
+    assert box['rc'] == 0 and 'cycle_ok' in names
+    assert 'safety_redo' in names and 'safety_resumed' in names
+    phases = [e['active'] for e in evs if e['event'] == 'safety_phase']
+    assert phases == [True, False]  # watched on the way to the object, not while carrying to the box
+    assert httpx.get(live_api + '/api/v1/mobile/status').json()['safety_phase']['active'] is False
+
+
 def test_phone_estop_while_paused_stops_the_cycle(live_api, tmp_path):
     log = tmp_path / 'estop.jsonl'
     t, box = run_cycle(['--api', live_api, '--remote-trigger', '--cycles', '1', '--wait-timeout', '30',

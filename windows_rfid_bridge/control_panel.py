@@ -64,7 +64,7 @@ STATUS = {  # result status -> badge text, colors (fg, bg)
 TASK_STATE = {'READY': '대기', 'QUEUED': '대기', 'PICKING': '피킹 중', 'COMPLETED': '완료', 'DEFECTIVE': '불량'}
 ROBOT_STATE = {'IDLE': '대기', 'RUNNING': '동작 중', 'PICKING': '피킹 중', 'SCANNING': '태그 스캔 중',
                'PAUSED': '일시정지', 'ESTOPPED': '비상 정지', 'ERROR': '오류', 'BUSY': '동작 중',
-               'RETURNING_HOME': '홈 복귀 중'}
+               'RETURNING_HOME': '홈 복귀 중', 'SAFETY_HOLD': '작업자 접근 · 안전 정지'}
 REPEAT_S = 3.0      # same tag typed again within this time (reader repeating) is skipped
 KEY_IDLE_MS = 1500  # half-typed reader input is dropped after this pause
 
@@ -558,6 +558,8 @@ class ControlPanel:
         link = status.get('robot_link') or {}
         if status.get('emergency_stopped'):
             color, text = C['danger'], '비상 정지'
+        elif status.get('safety_hold'):
+            color, text = C['danger'], '작업자 접근 · 안전 정지'
         elif status.get('robot_connected'):
             color, text = C['sky'], ROBOT_STATE.get(link.get('state'), link.get('state') or '연결됨')
             if status.get('paused'):

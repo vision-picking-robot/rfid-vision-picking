@@ -1,7 +1,7 @@
 // Keep earlier tab-only examples available when moving user management to the server.
 const storageKey = "vision-lab.packing-demo.v2";
 const initial = {
-  customers: [{ name: "홍길동", uid: "E2-34-08-A1" }, { name: "김서연", uid: "E2-34-08-B2" }],
+  customers: [],
   events: []
 };
 

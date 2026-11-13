@@ -326,6 +326,23 @@ Web Speech API의 `ko-KR` 전사를 기존 packing 처리기로 전달한다. Ch
   - 웹 대시보드(`web/app/capture.py`, `web/app/realsense.py`, `web/app/pick_plane.py`)에 OpenCV(Linux V4L2 / Windows DirectShow / macOS AVFoundation) 실시간 카메라 스트리밍, Intel RealSense 깊이·적외선·RGBD·3D 포인트 클라우드 뷰, 4점 평면 호모그래피(`PickPlane`) 좌표 변환이 포함되어 있다.
   - 추가적으로 `camera_depth/` 폴더에 RealSense D455f 기반 실시간 3D 높이·거리 측정기(`camera_depth/realsense_measure_height.py`, `camera_depth/run_measure_height.bat`) 및 전용 뷰어(`camera_depth/realsense_viewer.py`, `camera_depth/run_viewer.bat`)가 함께 포함되어 있다.
 
+## 작업 영역 안전 감시 (USB 웹캠)
+
+작업대에 고정한 USB 웹캠으로, 로봇이 **물건을 집으러 그 구역에 들어가는 동안에만**(접근 → 하강 → 집기) 그 구역 근처의
+작업자를 감시한다. 상자로 옮기는 동안과 대기 중에는 경고하지 않는다. (`web/app/safety.py`, 대시보드 [작업 영역 안전 감시])
+
+1. 작업자가 그 구역 근처에 들어오면 **1차 경고음 3초**.
+2. 3초 뒤에도 있으면 **로봇 정지** (진행 중인 동작을 바로 멈춤, `move_stop`).
+3. 구역 근처에 3초 동안 아무도 없으면 **"안전구역 확보. 로봇을 다시 가동합니다."** 음성 안내 후 멈췄던 동작부터 스스로 재가동.
+
+- 대시보드 [작업 영역 안전 감시]에서 **웹캠**을 고르고, **구역 설정**으로 영상 위에 구역 1~4의 꼭짓점을 4곳씩 찍는다(`state/safety.json`에 저장).
+  환경 변수 `SAFETY_CAMERA_INDEX`로 웹캠 번호를 미리 정할 수도 있다.
+- 브라우저는 클릭 전에는 소리를 낼 수 없으므로 시연 전에 **[경고음·음성 켜기]**를 한 번 누른다.
+- 사람 인식은 기본 YOLO(COCO) 모델의 `person` 클래스를 쓰고, 모델이 없으면 OpenCV 사람 검출기(HOG)를 쓴다.
+- 카메라 없이 리허설: **[가상 작업자 진입]** 버튼 (피킹 접근 중일 때 경고 → 정지 → 재가동이 그대로 동작).
+- 로봇 쪽은 `project_cycle.py ... --api`로 실행 중이면 따로 설정할 것이 없다.
+- 시연 보조 기능이며 인증된 안전장치가 아니다. 펜던트 E-Stop을 항상 가까이 둔다. 웹캠이 끊기면 감시가 멈추므로 화면의 카메라 상태를 확인한다.
+
 ## 문서·검증
 
 최신 커밋의 검증·최적화 결과는 [최신 검증 리포트](docs/latest-validation-review.md)에 있다.

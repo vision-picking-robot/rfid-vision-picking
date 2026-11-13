@@ -27,6 +27,16 @@ from .training_api import router
 from .voice import Voice, router as voice_router
 from .robot_voice import RobotVoice
 from .picking_integration import router as picking_integration_router
+from .safety import SafetyMonitor, router as safety_router
+
+
+class RevalidatedStatic(StaticFiles):
+    """Static files the browser re-checks on every load (ETag -> 304), so a `git pull` + restart shows at once."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
 STATIC = Path(__file__).parent / "static"
 log = logging.getLogger(__name__)
@@ -84,8 +94,13 @@ def create_app(settings=None, pipeline_factory=Pipeline, state_root=None):
         voice = Voice(pipeline.packing, settings.voice_enabled, barge_in=settings.voice_barge_in)
         voice.robot = RobotVoice(application)  # spoken robot commands via the phone-remote paths
         application.state.voice = voice
+        # Work-area safety webcam (warning -> hold -> "안전구역 확보" resume); see app/safety.py
+        safety = SafetyMonitor(Path(state_root or settings.state_dir) / "safety.json", settings,
+                               phase_fn=application.state.safety_phase, hold_fn=application.state.set_safety_hold)
+        application.state.safety = safety
         try:
             pipeline.start()
+            safety.start()
             async with robot_runtime(application, state_root or settings.state_dir, native=True):
                 await voice.start()
                 yield
@@ -93,6 +108,7 @@ def create_app(settings=None, pipeline_factory=Pipeline, state_root=None):
             try:
                 await voice.stop()
             finally:
+                await asyncio.to_thread(safety.stop)
                 await asyncio.to_thread(pipeline.stop)
 
     application = FastAPI(title="YOLOv8 Local Camera", version="0.1.0", lifespan=lifespan)
@@ -100,6 +116,7 @@ def create_app(settings=None, pipeline_factory=Pipeline, state_root=None):
     application.include_router(packing_router)
     application.include_router(voice_router)
     application.include_router(picking_integration_router)
+    application.include_router(safety_router)
     install_robot_routes(application)
     rfid_root = Path(state_root) if state_root is not None else REPO_ROOT / 'state'
     rfid_root.mkdir(parents=True, exist_ok=True)
@@ -109,7 +126,7 @@ def create_app(settings=None, pipeline_factory=Pipeline, state_root=None):
     async def domain_error(request, exc):
         return JSONResponse({"detail": str(exc)}, status_code=exc.status)
 
-    application.mount("/static", StaticFiles(directory=STATIC), name="static")
+    application.mount("/static", RevalidatedStatic(directory=STATIC), name="static")
 
     @application.get("/")
     async def index():

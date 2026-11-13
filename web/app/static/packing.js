@@ -1,6 +1,7 @@
 import { currentDestination, icon } from "./station-nav.js";
-import { demo, legacyUsers, record } from "./packing-demo.js";
+import { demo, record } from "./packing-demo.js";
 import { connectDashboardCamera } from "./dashboard-camera.js";
+import { connectSafetyPanel } from "./safety-panel.js";
 import { BrowserVoice } from "./browser-voice.js";
 import { ClapWake } from "./clap-wake.js";
 
@@ -105,11 +106,16 @@ const trainLink = sku => "/training?sku=" + encodeURIComponent(sku) + "#collect"
 const orderItems = (order = mainOrder()) => order.items.map(i => ({...productBySku(i.sku), ...i}));
 const packed = (order = mainOrder()) => order.items.filter(i => i.done).length;
 const isPacked = () => mainOrder().state === "awaiting_dispatch";
+const ORDER_STATES = {received: "주문 접수", awaiting_dispatch: "발송 대기", shipped: "발송 완료", delivered: "배송 완료"};
+const ORDER_STEP = {received: 0, packing: 1, awaiting_dispatch: 2, shipped: 3, delivered: 4};
 function orderStatus(order = mainOrder()) {
-  if (order.state === "received") return "주문 접수";
-  if (order.state === "awaiting_dispatch") return "발송 대기";
-  return order.paused ? "일시정지" : "피킹 중";
+  return ORDER_STATES[order.state] || (order.paused ? "일시정지" : "피킹 중");
 }
+const orderStyle = order => order.paused ? "amber" : ["shipped", "delivered"].includes(order.state) ? "neutral" : "";
+// Photos of the four presentation items (same pictures as the Windows control program)
+const PRODUCT_PHOTOS = {"PK-001": "chocochip", "PK-002": "peach_green_tea", "PK-003": "spam", "PK-004": "wet_wipes"};
+const PRESENTATION = Object.keys(PRODUCT_PHOTOS);
+const teamNumber = user => user?.uid || "미지정";
 const workEvents = () => station.events.map(e => [
   new Date(e.time).toLocaleTimeString("ko-KR", {hour12:false}), "작업", e.source, e.message
 ]);
@@ -167,10 +173,12 @@ function packingControls() {
     <p class="meta">놓기 완료 시 재고 차감 · ${escapeHtml(next.name)} 1${escapeHtml(next.unit)}</p></div>`;
 }
 
-let stopCamera;
+let stopCamera, stopSafety;
 function disconnectCamera() {
   stopCamera?.();
   stopCamera = null;
+  stopSafety?.();
+  stopSafety = null;
 }
 
 function renderDashboard() {
@@ -179,42 +187,42 @@ function renderDashboard() {
   }
   // Keep the camera mounted across inventory and order updates.
   stopCamera ??= connectDashboardCamera(document.getElementById("live-camera"), () => station);
+  stopSafety ??= connectSafetyPanel(document.getElementById("safety-camera"));
   if (!station) {
     document.getElementById("dashboard-order").textContent = "주문 조회 대기 중";
     return;
   }
   const progress = mainOrder().items.map(item => `<span class="${item.done ? "filled" : ""}"></span>`).join("");
   const quickButtons = [
-    button("cmd-go", "▶ 시작 (재개)", "main-btn"),
-    button("cmd-stop", "⏸ 정지", "stop-btn"),
-    button("cmd-pick", "🦾 집어 (피킹)"),
-    button("query-stock", "📦 재고 조회"),
-    button("query-order", "📋 주문 조회"),
-    button("cmd-order", "🛒 예시 주문")
+    button("cmd-go", icon("play") + "시작 · 재개", "main-btn"),
+    button("cmd-stop", icon("pause") + "정지", "stop-btn"),
+    button("cmd-pick", icon("robot-arm") + "집기"),
+    button("query-stock", icon("boxes") + "재고 조회"),
+    button("query-order", icon("package-check") + "주문 조회"),
+    button("cmd-order", icon("plus") + "예시 주문")
   ].join("");
   const rfidButtons = [
-    button("rfid-scan-auto", "📡 RFID 리더기 스캔", "main-btn"),
-    ...rfidPresetTags.map(([uid, label]) => button("rfid-tag-" + uid, `🏷️ ${label}`))
+    button("rfid-scan-auto", icon("scan") + "RFID 리더기 스캔", "main-btn"),
+    ...rfidPresetTags.map(([uid, label]) => button("rfid-tag-" + uid, `<span class="mono tag-uid">${uid.slice(-4)}</span>${escapeHtml(label)}`))
   ].join("");
   const statusBanner = (reply || lastRfidMessage)
-    ? `<p class="reply" role="status" style="margin-top:8px;padding:8px 10px;border-radius:6px;background:var(--mint-bg);color:var(--mint);font-weight:600;">${escapeHtml(lastRfidMessage || reply)}</p>`
+    ? `<p class="reply status-banner" role="status">${escapeHtml(lastRfidMessage || reply)}</p>`
     : "";
   document.getElementById("dashboard-order").innerHTML = `
     <div><div class="row"><strong class="order-no">#123</strong>${badge(orderStatus(), mainOrder().paused ? "amber" : "")}</div>
-      <p class="order-name">${escapeHtml(mainOrder().customer)} <span class="meta">· RFID ${escapeHtml(userForOrder(mainOrder())?.uid || "미할당")}</span></p></div>
+      <p class="order-name">${escapeHtml(mainOrder().customer)} <span class="meta">· 팀원 번호 ${escapeHtml(teamNumber(userForOrder(mainOrder())))}</span></p></div>
     <div><div class="row"><span class="meta">포장 수량</span><span class="qty">${packed()} / ${mainOrder().items.length}</span></div>
       <div class="progress" aria-hidden="true">${progress}</div></div>
     ${pickList()}${packingControls()}
-    <hr style="border:0;border-top:1px solid var(--line);margin:10px 0;">
-    <div class="stack" style="gap:8px;">
-      <div>
-        <strong style="font-size:12px;color:var(--sub);display:block;margin-bottom:6px;">🎛️ 음성 대체 수동 버튼 제어 (마이크 없이 클릭 제어)</strong>
-        <div class="buttons" style="display:flex;flex-wrap:wrap;gap:6px;">${quickButtons}</div>
-      </div>
-      <div>
-        <strong style="font-size:12px;color:var(--sub);display:block;margin-bottom:6px;">🏷️ RFID 태그 인식 제어 (PC/SC 리더기 및 태그 프리셋)</strong>
-        <div class="buttons" style="display:flex;flex-wrap:wrap;gap:6px;">${rfidButtons}</div>
-      </div>
+    <div class="control-groups">
+      <section>
+        <h3 class="group-label">수동 제어 <span>음성 명령과 같은 동작</span></h3>
+        <div class="buttons">${quickButtons}</div>
+      </section>
+      <section>
+        <h3 class="group-label">RFID 태그 <span>리더기 스캔 또는 태그 직접 선택</span></h3>
+        <div class="buttons">${rfidButtons}</div>
+      </section>
       ${statusBanner}
     </div>`;
   document.getElementById("dashboard-events").innerHTML = eventList(workEvents().slice(-3));
@@ -223,25 +231,30 @@ function renderDashboard() {
 function shippingProgress(step) {
   const stages = ["주문 접수", "택배 상품 준비", "발송 대기", "발송 완료", "배송 완료"];
   return `<ol class="pipeline" aria-label="배송 진행 단계">${stages.map((name, i) => {
-    const active = i === step ? 'class="current" aria-current="step"' : "";
-    return `<li ${active} ${i > 2 ? 'aria-disabled="true"' : ""}>${name}${i > 2 ? " · 비활성" : ""}</li>`;
+    const state = i === step ? 'class="current" aria-current="step"' : i < step ? 'class="passed"' : "";
+    return `<li ${state}>${name}</li>`;
   }).join("")}</ol>`;
 }
 
 function orders() {
-  const rows = station.orders.map(o => [button("select-" + o.number, "#" + o.number, "link"), escapeHtml(o.customer),
-    badge(orderStatus(o), o.paused ? "amber" : ""), o.items.length + "개"]);
+  const sorted = station.orders.slice().sort((a, b) => b.number - a.number);
+  const rows = sorted.map(o => [button("select-" + o.number, "#" + o.number, "link"), escapeHtml(o.customer),
+    `<span class="mono">${escapeHtml(teamNumber(userForOrder(o)))}</span>`, badge(orderStatus(o), orderStyle(o)),
+    escapeHtml(orderItems(o).map(p => p.name).slice(0, 2).join(", ") + (o.items.length > 2 ? ` 외 ${o.items.length - 2}` : "")),
+    o.items.length + "개"]);
   const order = station.orders.find(o => o.number === selectedOrder) || mainOrder();
-  const received = order.state === "received";
-  const items = received
-    ? table(["주문 품목", "수량"], orderItems(order).map(p => [escapeHtml(p.name), "1" + escapeHtml(p.unit)]))
-    : pickList();
-  return panel("주문 목록", table(["주문 번호", "주문자", "상태", "주문 수량"], rows), button("new-order", icon("mic") + "음성 주문 예시")) +
+  const live = order.number === 123;
+  const items = live && order.state !== "received" ? pickList()
+    : table(["주문 품목", "SKU", "수량", "보관 위치", "상태"], orderItems(order).map(p => [escapeHtml(p.name),
+      `<span class="mono">${escapeHtml(p.sku)}</span>`, "1" + escapeHtml(p.unit), escapeHtml(p.bin || "—"),
+      p.done ? badge("담음", "neutral") : badge("대기", "amber")]));
+  return panel("주문 목록", table(["주문 번호", "주문자", "팀원 번호", "상태", "주문 품목", "수량"], rows),
+      `<div class="row">${badge(station.orders.length + "건", "neutral")}${button("new-order", icon("mic") + "음성 주문 예시")}</div>`) +
     panel("주문 #" + order.number, `<div class="pad stack">
-      ${shippingProgress(received ? 0 : order.state === "awaiting_dispatch" ? 2 : 1)}
-      ${facts([["주문자", order.customer], ["박스 RFID", received ? "판독 대기" : userForOrder(order)?.uid || "미할당"],
-        ["포장 수량", packed(order) + " / " + order.items.length]])}
-      ${items}${received ? '<p class="meta">다음 박스의 RFID 판독 대기</p>' : packingControls()}
+      ${shippingProgress(ORDER_STEP[order.state] ?? 1)}
+      ${facts([["주문자", order.customer], ["팀원 번호", teamNumber(userForOrder(order))],
+        ["포장 수량", packed(order) + " / " + order.items.length], ["상태", orderStatus(order)]])}
+      ${items}${live && order.state !== "received" ? packingControls() : ""}
     </div>`);
 }
 
@@ -254,11 +267,78 @@ function editForm(kind, fields, submitLabel = "저장") {
     <div class="buttons end">${button("cancel", "취소")}<button type="submit" class="main-btn">${submitLabel}</button></div></form>`;
 }
 
+// ---- inventory: label scan lookup (reader typing into this page, or a tag read elsewhere) ----
+let stockQuery = "";
+let scanBuffer = "", scanTimer = null;
+let stockScan = null;          // {state: "ok"|"error"|"busy", data, message, source, at}
+let lastScanSeq = null;        // /api/v1/last-scan seq already shown
+
+async function lookupTag(raw, source = "이 화면에서 스캔") {
+  const uid = String(raw).toUpperCase().replace(/[^0-9A-F]/g, "");
+  if (uid.length < 4) { stockScan = {state: "error", message: "UID가 너무 짧습니다. 라벨을 다시 찍어 주세요.", source, at: new Date()}; render(); return; }
+  stockScan = {state: "busy", message: uid + " 조회 중", source, at: new Date()};
+  render();
+  try {
+    const response = await fetch(api + "/stock/tag/" + encodeURIComponent(uid), {cache: "no-store"});
+    const data = await response.json();
+    if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "조회하지 못했습니다.");
+    stockScan = {state: "ok", data, source, at: new Date()};
+    selectedSku = data.product.sku;
+    announce(`${data.product.name} 재고 ${data.product.stock}${data.product.unit}, 위치 ${data.product.bin}`);
+  } catch (error) {
+    stockScan = {state: "error", message: error.message, uid, source, at: new Date()};
+  }
+  if (currentDestination().id === "stock") render();
+}
+
+function scanPanel() {
+  const time = stockScan ? stockScan.at.toLocaleTimeString("ko-KR", {hour12: false}) : "";
+  let body;
+  if (!stockScan) {
+    body = `<div class="scan-empty"><strong>라벨을 리더기에 찍으세요</strong>
+      <p class="meta">이 화면이 열린 PC에 연결된 리더기, 또는 UID 직접 입력으로 조회합니다. 조회만 하고 로봇 작업은 만들지 않습니다.</p></div>`;
+  } else if (stockScan.state === "busy") {
+    body = `<div class="scan-empty"><strong>${escapeHtml(stockScan.message)}</strong></div>`;
+  } else if (stockScan.state === "error") {
+    body = `<div class="scan-empty scan-error"><strong>${escapeHtml(stockScan.message)}</strong>
+      <p class="meta">${escapeHtml(stockScan.source)} · ${time}</p></div>`;
+  } else {
+    const {product: p, tag, uid} = stockScan.data;
+    const photo = PRODUCT_PHOTOS[p.sku];
+    const [building, row, level] = (p.bin || "").split(" ");
+    const level_ = p.available <= 0 ? "amber" : p.available < 5 ? "amber" : "";
+    body = `<div class="scan-result">
+      ${photo ? `<img class="scan-photo" src="/static/products/${photo}.jpg" alt="${escapeHtml(p.name)} 사진" width="120" height="160">` : ""}
+      <div class="scan-main">
+        <p class="meta">${escapeHtml(stockScan.source)} · ${time} · <span class="mono">${escapeHtml(uid)}</span></p>
+        <h3 class="scan-name">${escapeHtml(tag.product_name || p.name)}</h3>
+        <p class="meta mono">${escapeHtml(p.sku)} · ${escapeHtml(tag.sku_code || "")} · 출고 박스 ${escapeHtml(tag.target_box_id || "—")}</p>
+        <div class="scan-figures">
+          <div><span>현재 재고</span><strong>${p.stock}<em>${escapeHtml(p.unit)}</em></strong></div>
+          <div><span>주문 가능</span><strong>${p.available}<em>${escapeHtml(p.unit)}</em></strong>${p.reserved ? `<small>예약 ${p.reserved}${escapeHtml(p.unit)}</small>` : ""}</div>
+          <div><span>보관 위치</span><strong class="scan-bin">${escapeHtml(p.bin || "미지정")}</strong>
+            ${building ? `<small>${escapeHtml(building)} 창고 · ${escapeHtml(row || "")} · ${escapeHtml(level || "")}</small>` : ""}</div>
+        </div>
+        ${level_ ? `<p>${badge(p.available <= 0 ? "주문 가능 수량 없음" : "재고 부족", "amber")}</p>` : ""}
+      </div></div>`;
+  }
+  return panel("라벨 스캔 재고 조회", `<div class="pad scan-pad">${body}
+    <form class="scan-form" data-scan-form><label class="field">UID 직접 입력
+      <input name="scan_uid" placeholder="예: 0B71E55D" maxlength="20" autocomplete="off"></label>
+      <button type="submit" class="main-btn">${icon("scan")}조회</button></form></div>`,
+    `<span class="reader-state ${scanBuffer ? "typing" : ""}">${scanBuffer ? "리더기 입력 중 " + escapeHtml(scanBuffer) : "리더기 대기"}</span>`);
+}
+
 function inventory() {
   if (!productBySku(selectedSku)) selectedSku = station.products[0].sku;
   const model = station.model;
-  const rows = station.products.map(p => [button("sku-" + p.sku, escapeHtml(p.name), "link"),
-    escapeHtml(p.sku), p.stock, p.reserved, p.available, escapeHtml(p.bin || "—"),
+  const query = stockQuery.trim().toLowerCase();
+  const ordered = [...PRESENTATION.map(productBySku).filter(Boolean),
+    ...station.products.filter(p => !PRESENTATION.includes(p.sku))];
+  const shown = query ? ordered.filter(p => [p.name, p.sku, p.bin, p.alias].some(v => String(v || "").toLowerCase().includes(query))) : ordered;
+  const rows = shown.map(p => [button("sku-" + p.sku, escapeHtml(p.name), "link") +
+      (PRESENTATION.includes(p.sku) ? " " + badge("발표 품목") : ""),
+    `<span class="mono">${escapeHtml(p.sku)}</span>`, p.stock, p.reserved, p.available, escapeHtml(p.bin || "—"),
     escapeHtml(model.classes.find(c => c.sku === p.sku)?.name || "미연결")]);
   const product = productBySku(selectedSku) || station.products[0];
   const assigned = model.classes.find(c => c.sku === selectedSku);
@@ -280,7 +360,11 @@ function inventory() {
     `<input type="hidden" name="model_id" value="${escapeHtml(model.id)}">`,
     `<label class="field">탐지 클래스<select name="class_id"><option value="">미연결</option>${options.join("")}</select></label>`
   ]) : "";
-  return panel("상품 재고", add + table(["상품명", "SKU", "보유", "예약", "가용", "위치", "탐지 클래스"], rows), button("add-product", icon("plus") + "상품 등록")) +
+  const search = `<div class="stock-search pad"><label class="field">품목 검색
+      <input type="search" data-stock-search value="${escapeHtml(stockQuery)}" placeholder="상품명, SKU, 위치(예: B동)" autocomplete="off"></label>
+      <p class="meta">${shown.length} / ${station.products.length}개 품목 · 발표 품목 4개가 맨 위</p></div>`;
+  return scanPanel() + panel("상품 재고", add + search + `<div class="stock-table">${table(["상품명", "SKU", "보유", "예약", "가용", "위치", "탐지 클래스"], rows)}</div>`,
+      button("add-product", icon("plus") + "상품 등록")) +
     panel(product.name, `<div class="pad stack">${facts([["음성 별칭", product.alias], ["수량 단위", product.unit],
       ["활성 모델", model.name], ["탐지 클래스", assigned?.name || "미연결"]])}
       <div class="buttons">${button("adjust", "재고 수량 조정")}${button("mapping", assigned ? "클래스 연결 변경" : "탐지 클래스 연결", "", !model.classes.length)}
@@ -288,27 +372,36 @@ function inventory() {
       ${model.classes.length ? "" : '<p class="meta">활성 모델에 등록된 클래스가 없습니다.</p>'}</div>` + adjust + mapping);
 }
 
+// A team number for someone added on this screen (TM-YY-NNNN, not used by anyone yet)
+function suggestTeamNumber() {
+  const used = new Set(station.users.map(user => user.uid));
+  const year = String(new Date().getFullYear()).slice(-2);
+  for (;;) {
+    const number = `TM-${year}-${String(Math.floor(Math.random() * 9000) + 1000)}`;
+    if (!used.has(number)) return number;
+  }
+}
+
 function users() {
   const person = currentUser();
+  const ordersOf = user => station.orders.filter(order => order.customer_id === user.id);
   const rows = station.users.map(user => [button("person-" + user.id, escapeHtml(user.name), "link"),
-    `<span class="mono">${escapeHtml(user.uid || "—")}</span>`, user.uid ? badge("할당됨") : badge("할당 대기", "amber")]);
-  const add = form === "customer" ? editForm("customer", [field("사용자 이름", "name")], "사용자 등록") : "";
-  const previous = legacyUsers.filter(person => !station.users.some(user =>
-    user.name === person.name && (user.uid || "") === person.uid));
-  const archive = previous.length ? `<details class="pad"><summary>이 탭의 이전 사용자 기록 (${previous.length})</summary>
-    ${table(["사용자", "이전 RFID"], previous.map(p => [escapeHtml(p.name), escapeHtml(p.uid || "미할당")]))}</details>` : "";
-  const list = panel("사용자 목록", add + table(["사용자", "박스 RFID", "할당 상태"], rows) + archive,
-    button("add-customer", icon("user-plus") + "사용자 추가", "main-btn"));
+    `<span class="mono">${escapeHtml(teamNumber(user))}</span>`, ordersOf(user).length + "건",
+    user.packing ? badge("패킹 중") : badge("대기", "neutral")]);
+  const add = form === "customer" ? editForm("customer", [field("팀원 이름", "name")], "팀원 등록") : "";
+  const list = panel("팀원 목록", add + table(["팀원", "팀원 번호", "주문", "상태"], rows),
+    button("add-customer", icon("user-plus") + "팀원 추가", "main-btn"));
   if (!person) return list;
-  const orders = station.orders.filter(order => order.customer_id === person.id);
-  const edit = form === "rfid" ? editForm("rfid", [field("박스 RFID ID", "uid", person.uid || ""),
-    `<input type="hidden" name="expected_uid" value="${escapeHtml(person.uid || "")}">`], "RFID 저장") : "";
+  const orders = ordersOf(person).sort((a, b) => b.number - a.number);
+  const edit = form === "rfid" ? editForm("rfid", [field("팀원 번호", "uid", person.uid || suggestTeamNumber()),
+    `<input type="hidden" name="expected_uid" value="${escapeHtml(person.uid || "")}">`], "번호 저장") : "";
+  const history = orders.length ? table(["주문", "상태", "품목"], orders.slice(0, 6).map(o => [
+    button("select-" + o.number, "#" + o.number, "link"), badge(orderStatus(o), orderStyle(o)), o.items.length + "개"])) : "";
   const detail = panel(person.name, `<div class="pad stack">
-    ${facts([["박스 RFID", person.uid || "할당 대기"], ["주문", orders.map(o => "#" + o.number).join(", ") || "없음"]])}
-    <div class="buttons">${button("edit-rfid", person.uid ? "RFID 변경" : "RFID 할당", "main-btn", person.packing)}
-    ${person.uid ? button("unlink-rfid", "할당 해제", "", person.packing) : ""}
+    ${facts([["팀원 번호", teamNumber(person)], ["주문", orders.length + "건"]])}
+    <div class="buttons">${button("edit-rfid", person.uid ? "팀원 번호 변경" : "팀원 번호 지정", "", person.packing)}
     ${orders.length ? button("order-detail", "주문 상세 " + icon("arrow-right"), "link") : ""}</div>
-    ${person.packing ? '<p class="meta">패킹 완료 후 RFID를 변경할 수 있습니다.</p>' : ""}</div>` + edit);
+    ${person.packing ? '<p class="meta">패킹 중인 주문이 끝나면 번호를 바꿀 수 있습니다.</p>' : ""}</div>` + edit + history);
   return `<div class="admin-columns">${list}${detail}</div>`;
 }
 
@@ -513,7 +606,7 @@ const actions = {
     const action = mainOrder().paused ? "cmd-go" : "cmd-stop";
     announce((await request("/command", "POST", {action})).text);
   },
-  "order-detail"() { showOrder(station.orders.find(order => order.customer_id === currentUser().id).number); },
+  "order-detail"() { showOrder(Math.max(...station.orders.filter(order => order.customer_id === currentUser().id).map(o => o.number))); },
   "all-logs"() { logKind = "전체"; location.hash = "logs"; },
   "select-123"() { selectedOrder = 123; },
   "select-124"() { selectedOrder = 124; },
@@ -573,7 +666,8 @@ root.addEventListener("click", async event => {
   } else if (Object.hasOwn(actions, action)) {
     await perform(actions[action], ["toggle", "new-order", "confirm-order", "unlink-rfid"].includes(action));
   } else {
-    if (action.startsWith("sku-")) { selectedSku = action.slice(4); form = ""; }
+    if (action.startsWith("select-")) selectedOrder = Number(action.slice(7));
+    else if (action.startsWith("sku-")) { selectedSku = action.slice(4); form = ""; }
     else if (action.startsWith("person-")) { selectedUserId = Number(action.slice(7)); form = ""; }
     else if (action.startsWith("log-")) logKind = action.slice(4);
     else return;
@@ -592,9 +686,65 @@ root.addEventListener("click", async event => {
 
 root.addEventListener("input", event => {
   if (event.target instanceof HTMLInputElement) event.target.setCustomValidity("");
+  if (event.target.matches("[data-stock-search]")) {
+    stockQuery = event.target.value;
+    const caret = event.target.selectionStart;
+    render();
+    const box = view.querySelector("[data-stock-search]");
+    box?.focus();
+    box?.setSelectionRange(caret, caret);
+  }
 });
 
+// RFID reader in keyboard mode on the inventory page: it types the UID and Enter into the page.
+document.addEventListener("keydown", event => {
+  if (currentDestination().id !== "stock" || event.ctrlKey || event.altKey || event.metaKey) return;
+  if (event.target.closest?.("input, textarea, select, [contenteditable]")) return;
+  const state = () => {
+    const label = view.querySelector(".reader-state");
+    if (label) { label.textContent = scanBuffer ? "리더기 입력 중 " + scanBuffer : "리더기 대기"; label.classList.toggle("typing", !!scanBuffer); }
+  };
+  if (event.key === "Enter") {
+    if (!scanBuffer) return;
+    const uid = scanBuffer;
+    scanBuffer = "";
+    state();
+    event.preventDefault();
+    void lookupTag(uid, "리더기 스캔 (이 PC)");
+  } else if (/^[0-9a-fA-F]$/.test(event.key)) {
+    scanBuffer = (scanBuffer + event.key.toUpperCase()).slice(-20);
+    clearTimeout(scanTimer);
+    scanTimer = setTimeout(() => { scanBuffer = ""; state(); }, 1500);
+    state();
+  }
+});
+
+// A tag read anywhere else (Windows control program, phone NFC, dashboard) is looked up here too.
+async function followLastScan() {
+  if (currentDestination().id !== "stock") return;
+  try {
+    const response = await fetch("/api/v1/last-scan", {cache: "no-store"});
+    if (!response.ok) return;
+    const scan = (await response.json()).last_scan;
+    const seq = scan?.seq ?? 0;
+    if (lastScanSeq === null) { lastScanSeq = seq; return; }
+    if (seq === lastScanSeq) return;
+    lastScanSeq = seq;
+    const sources = {remote_reader: "리더기 (관제 프로그램)", phone_nfc: "갤럭시 NFC", voice: "음성 명령"};
+    if (scan.uid || scan.raw_uid) await lookupTag(scan.uid || scan.raw_uid, sources[scan.source] || scan.source);
+  } catch {
+    // RFID routes may be absent on a dashboard-only server
+  }
+}
+
 root.addEventListener("submit", async event => {
+  const scanForm = event.target.closest("form[data-scan-form]");
+  if (scanForm) {
+    event.preventDefault();
+    const value = scanForm.elements.scan_uid.value;
+    if (value.trim()) await lookupTag(value, "UID 직접 입력");
+    return;
+  }
   const editor = event.target.closest("form[data-edit]");
   if (!editor) return;
   event.preventDefault();
@@ -614,7 +764,7 @@ root.addEventListener("submit", async event => {
       const user = await request("/users", "POST", {name: values.name});
       selectedUserId = user.id;
       form = "rfid";
-      announce(user.name + " 사용자를 추가했습니다. 박스 RFID를 할당하세요.");
+      announce(user.name + " 팀원을 추가했습니다. 팀원 번호를 확인하고 저장하세요.");
       return;
     }
     if (kind === "rfid") {
@@ -636,6 +786,7 @@ root.addEventListener("submit", async event => {
 
 window.addEventListener("hashchange", () => {
   form = "";
+  lastScanSeq = null;  // only tags read while the inventory page is open are shown there
   voiceOpen = false;
   confirmingOrder = false;
   render();
@@ -650,7 +801,7 @@ render();
 async function sync() {
   if (pending || document.hidden) return;
   try {
-    await Promise.all([refresh(), voiceOpen ? updateVoice() : undefined]);
+    await Promise.all([refresh(), voiceOpen ? updateVoice() : undefined, followLastScan()]);
     const message = document.getElementById("packing-error");
     if (message.dataset.source === "sync") message.hidden = true;
   } catch (error) {

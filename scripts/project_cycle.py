@@ -276,6 +276,8 @@ class MobileRemote(threading.Thread):
       - emergency_stop -> move_stop at once, then every later step raises.
       - pause / resume -> the cycle holds before its next step (a running move finishes first).
       - start, scan_dispatch, home, box_placed -> queued; the main loop runs them while idle.
+      - safety_hold (web/app/safety.py: a person near the zone being picked) -> move_stop at once; the
+        cycle waits and redoes the interrupted move when the hold is released ("안전구역 확보").
     It is not a substitute for the pendant E-Stop.
     """
 
@@ -297,6 +299,18 @@ class MobileRemote(threading.Thread):
         self.last_seq = None
         self._commands = []
         self._lock = threading.Lock()
+        self.safety = threading.Event()  # set while the work-area safety watch holds the robot
+        self.safety_count = 0            # holds so far: a move running across a new hold is redone
+
+    def safety_phase(self, active, zone=None, product=None):
+        """Tell the safety watch whether the robot is heading into an object's zone (best effort)."""
+        import httpx
+        self._phase_active = bool(active)
+        try:
+            httpx.post(f'{self.api}/api/v1/mobile/safety-phase',
+                       json={'active': bool(active), 'zone': zone, 'product': product}, timeout=2)
+        except Exception as error:  # noqa: BLE001
+            self.log('safety_phase_failed', message=str(error))
 
     def poll(self):
         """Status dict, or None when the web has no mobile API."""
@@ -311,6 +325,8 @@ class MobileRemote(threading.Thread):
         """Tell the phone what the robot is doing (best effort; never raises)."""
         import httpx
         body = {'mode': self.mode, 'state': state, 'message': message}
+        if state in ('IDLE', 'ERROR', 'ESTOPPED') and getattr(self, '_phase_active', False):
+            self.safety_phase(False)  # a cycle that ended or failed mid-approach is no longer picking
         if ack is not None:
             body.update(ack_seq=int(ack), ack_result=result or 'done')
         try:
@@ -331,6 +347,18 @@ class MobileRemote(threading.Thread):
                 self.log('move_stop_sent', source='mobile_estop')
             except Exception as error:  # noqa: BLE001
                 self.log('move_stop_failed', source='mobile_estop', message=str(error))
+        if status.get('safety_hold') and not self.safety.is_set():
+            self.safety_count += 1
+            self.safety.set()
+            self.log('safety_hold', message=status.get('safety_message'), action='move_stop')
+            try:
+                self.stop_fn()
+                self.log('move_stop_sent', source='safety')
+            except Exception as error:  # noqa: BLE001
+                self.log('move_stop_failed', source='safety', message=str(error))
+        elif not status.get('safety_hold') and self.safety.is_set():
+            self.safety.clear()
+            self.log('safety_clear', message=status.get('safety_message'))
         if status.get('paused') and not status.get('emergency_stopped'):
             self.paused.set()
         else:
@@ -402,6 +430,14 @@ class MobileRemote(threading.Thread):
         """Called before/after every motion step: raise on E-stop, hold while paused."""
         if self.tripped.is_set():
             raise RuntimeError('Mobile emergency stop pressed: motion stopped (reset_stop on the phone before restarting)')
+        if self.safety.is_set():
+            self.report('SAFETY_HOLD', '작업자 접근 — 안전 정지 중입니다. 안전구역이 확보되면 다시 가동합니다.')
+            while self.safety.is_set() and not self.tripped.is_set() and self.alive.is_set():
+                time.sleep(self.period / 2)
+            if self.tripped.is_set():
+                raise RuntimeError('Mobile emergency stop pressed during a safety hold')
+            self.log('safety_resumed')
+            self.report('RUNNING', '안전구역 확보 — 작업을 다시 시작합니다.')
         if self.paused.is_set():
             self.log('remote_paused')
             self.report('PAUSED', '일시정지됨 — 다음 동작 전에 대기 중입니다.')
@@ -509,12 +545,43 @@ class Cycle:
             key = 'travel_speed'
         return float(getattr(self.args, key, None) or getattr(self.args, 'empty_speed', 1.0) or 1.0)
 
+    def _guarded(self, name, move):
+        """Run one move; if a safety hold stopped it part-way, wait for "안전구역 확보" and move to the
+        same target again (the target is absolute, so redoing it simply finishes the move)."""
+        holds = lambda: getattr(getattr(self, 'estop', None), 'safety_count', 0)  # noqa: E731
+        for attempt in range(20):
+            self._estop_check()  # waits here while a safety hold or pause is active
+            count = holds()
+            try:
+                move()
+            except Exception:
+                if holds() == count:
+                    raise
+                self.log('safety_redo', name=name, attempt=attempt + 1, note='move stopped by the safety hold')
+                continue
+            if holds() != count:
+                self.log('safety_redo', name=name, attempt=attempt + 1, note='move stopped by the safety hold')
+                continue
+            self._estop_check()
+            return
+        raise RuntimeError(f'{name}: interrupted by the safety watch too many times')
+
+    def _safety_phase(self, active):
+        """Pick phase for the work-area safety watch: from the approach to the grasp only."""
+        remote = getattr(self, 'estop', None)
+        if remote is None or not hasattr(remote, 'safety_phase') or getattr(remote, '_phase_active', False) == active:
+            return
+        zone = getattr(self, '_zone', None)
+        zones = (getattr(self, 'depth_cfg', None) or {}).get('zones') or {}
+        if zone is None and zones:
+            zone = next((int(z) for z, name in zones.items() if name == getattr(self, '_product', None)), None)
+        remote.safety_phase(active, zone, getattr(self, '_product', None))
+        self.log('safety_phase', active=active, zone=zone, product=getattr(self, '_product', None))
+
     def j(self, name, posj):
-        self._estop_check()
         t0 = time.monotonic()
         jvel = self.args.jvel * self.speed()
-        self.mover.movej(posj, jvel, jvel)
-        self._estop_check()
+        self._guarded(name, lambda: self.mover.movej(posj, jvel, jvel))
         cur = self.raw.get_current_posj()
         err = max(abs(a - b) for a, b in zip(cur, posj))
         if err > JOINT_TOL:
@@ -522,11 +589,9 @@ class Cycle:
         self.log('step', name=name, kind='movej', vel=round(jvel, 1), seconds=round(time.monotonic() - t0, 1))
 
     def l(self, name, pose, vel=None, tol=POS_TOL, scaled=True):
-        self._estop_check()
         t0 = time.monotonic()
         vel = (vel or self.args.lvel) * (self.speed() if scaled else 1.0)
-        self.mover.movel(pose, vel, vel, DR_BASE)
-        self._estop_check()
+        self._guarded(name, lambda: self.mover.movel(pose, vel, vel, DR_BASE))
         cur = FlangeOffset(self.raw, self.offset).get_current_posx(DR_BASE)
         err = max(abs(a - b) for a, b in zip(cur[:3], pose[:3]))
         if err > tol:
@@ -610,6 +675,7 @@ class Cycle:
         zone = next((z for z, name in zones.items() if name == product), None)
         if zone is None:
             raise RuntimeError(f'no depth zone is assigned to {product}')
+        self._zone = zone  # the safety watch guards this zone during the approach
         url = f"{self.args.depth_api.rstrip('/')}/api/robot/pick/depth-objects"
         samples = []
         for i in range(int(self.depth_cfg.get('samples', 3))):
@@ -675,6 +741,7 @@ class Cycle:
 
     def detect(self, task):
         product = task.get('yolo_class_name') if isinstance(task, dict) else task
+        self._zone = None
         if getattr(self.args, 'depth_api', None):
             return self.detect_by_depth(product)
         if product not in self.products or not self.products[product]['real'].get('taught'):
@@ -738,6 +805,7 @@ class Cycle:
         self._approach = [*grasp[:2], approach_z, *grasp[3:]]
         self._above = [*grasp[:2], above_z, *grasp[3:]]
         self._product = target['product']
+        self._safety_phase(True)  # from here to the grasp a person near this zone holds the robot
         self.grip('gripper_open', 0, lambda p: p <= OPEN_MAX)
         if getattr(self, 'taught_carry', False):
             # Mirror of pull_in: a low approach on the far side would otherwise be a long descending
@@ -769,6 +837,7 @@ class Cycle:
             raise RuntimeError('No object in the gripper (empty close)')
 
     def retract(self):
+        self._safety_phase(False)  # carrying to the box: no work-area warnings
         self.l('lift', self._above, tol=WAYPOINT_TOL)
         if self.taught_carry:
             self._pull_in()
@@ -839,6 +908,7 @@ class Cycle:
 
     def recover_home(self):
         """After a stop mid-motion: rise straight up to the home height, then go home."""
+        self._safety_phase(False)
         cur = FlangeOffset(self.raw, self.offset).get_current_posx(DR_BASE)
         safe_z = self.poses['poses']['home']['posx'][2]
         if cur is not None and cur[2] < safe_z - POS_TOL:
