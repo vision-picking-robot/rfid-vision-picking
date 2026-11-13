@@ -31,21 +31,31 @@ def check(api):
         return False
 
 
-def submit(api, uid, quantity):
+def clean_uid(line):
+    """Reader/keyboard text -> hex UID ('0b 71:e5 5d' -> '0B71E55D')."""
+    return ''.join(ch for ch in line.upper() if ch in '0123456789ABCDEF')
+
+
+def send(api, uid, quantity, log=say):
     """Send the raw reader value; the robot PC matches it (even partial) to one DB tag.
 
-    Returns the matched full UID, or None when the robot PC rejected or could not be reached.
+    Returns a result dict for the console and the control panel:
+    status 'registered' | 'duplicate' | 'unknown' | 'rejected' | 'offline', plus uid, product, task, message.
     """
+    result = {'status': 'offline', 'raw_uid': uid, 'uid': None, 'product': None, 'task': None, 'message': ''}
     try:
         r = httpx.get(f'{api}/api/v1/tags/{uid}', timeout=5)
         if r.status_code == 200:
             info = r.json()
+            result.update(product=info, uid=info.get('tag_uid'))
             note = '' if info.get('tag_uid') == uid else f' (읽은 값 {uid} -> {info.get("tag_uid")})'
-            say(f'  DB 매칭: {info.get("product_name")} ({info.get("yolo_class_name")}) -> {info.get("target_box_id")}{note}')
+            log(f'  DB 매칭: {info.get("product_name")} ({info.get("yolo_class_name")}) -> {info.get("target_box_id")}{note}')
         elif r.status_code in (404, 409):
-            say(f'X DB 매칭 실패 {r.status_code}: {r.json().get("detail", r.text)[:200]}')
-            say('  태그를 다시 찍어 주세요.')
-            return None
+            detail = r.json().get('detail', r.text)[:200]
+            log(f'X {detail}' if detail.startswith('등록되지 않은') else f'X 등록되지 않은 태그입니다 ({uid}): {detail}')
+            log('  태그를 다시 찍거나 등록된 상품의 태그인지 확인해 주세요.')
+            result.update(status='unknown', message=detail)
+            return result
     except (httpx.HTTPError, ValueError):
         pass  # the scan-event below reports the real error
     payload = dict(uid=uid, quantity=quantity, event_id=str(uuid4()))
@@ -55,20 +65,31 @@ def submit(api, uid, quantity):
             r = httpx.post(f'{api}/api/v1/scan-event', json=payload, timeout=10)
             if r.is_error:
                 if 'active task' in r.text:
-                    say('X 이 상품은 이미 대기/진행 중인 작업이 있어 새로 등록하지 않았습니다.')
+                    log('X 이 상품은 이미 대기/진행 중인 작업이 있어 새로 등록하지 않았습니다.')
+                    result.update(status='duplicate', message='이미 대기/진행 중인 작업이 있습니다')
                 else:
-                    say(f'X 등록 거부 {r.status_code}: {r.text[:200]}  (DB에 등록된 태그인지 확인)')
-                return None
+                    log(f'X 등록 거부 {r.status_code}: {r.text[:200]}  (DB에 등록된 태그인지 확인)')
+                    result.update(status='rejected', message=r.text[:200])
+                return result
             body = r.json()
             task = body.get('task') or {}
-            say(f'O 작업 등록: task={task.get("task_id", "?")[:8]} 상태={task.get("status")} -> 로봇이 집으러 갑니다')
-            return body.get('uid') or uid
+            log(f'O 작업 등록: task={task.get("task_id", "?")[:8]} 상태={task.get("status")} -> 로봇이 집으러 갑니다')
+            result.update(status='registered', uid=body.get('uid') or result['uid'] or uid, task=task,
+                          product=body.get('product') or result['product'])
+            return result
         except httpx.TransportError as error:
             if attempt == 4:
-                say(f'X 로봇 PC 전송 실패: {error}')
-                return None
+                log(f'X 로봇 PC 전송 실패: {error}')
+                result.update(message=str(error))
+                return result
             time.sleep(min(2 ** attempt, 8))
-    return None
+    return result
+
+
+def submit(api, uid, quantity):
+    """Console mode: the matched full UID, or None when the robot PC rejected or could not be reached."""
+    result = send(api, uid, quantity)
+    return result['uid'] if result['status'] == 'registered' else None
 
 
 def keyboard_loop(api, quantity, lines=None, repeat_s=3.0):
@@ -80,7 +101,7 @@ def keyboard_loop(api, quantity, lines=None, repeat_s=3.0):
     lines = lines if lines is not None else iter(input, None)
     last_uid, last_at = None, 0.0
     for line in lines:
-        raw = ''.join(ch for ch in line.upper() if ch in '0123456789ABCDEF')
+        raw = clean_uid(line)
         if not raw:
             continue
         if len(raw) < 4:
