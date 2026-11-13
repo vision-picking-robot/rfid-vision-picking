@@ -39,8 +39,8 @@ export function cameraBasis(corners) {
   return [forward, left, up];
 }
 
-const metal = ["#83979f","#e8ece6","#a2b3b5","#c3d1d0","#a5b7b9","#e0e6e1"];
-const steel = ["#344c57","#829599","#49616b","#617a81","#526b75","#8c9d9e"];
+const metal = ["#838b9f","#e6e8ec","#a2a8b5","#c3c7d1","#a5abb9","#e0e2e6"];
+const steel = ["#313d5a","#828999","#49536b","#616b81","#525c75","#8c919e"];
 const amber = ["#dcaa74","#91623e","#aa7048","#d38f5c","#bb8052","#ce9668"];
 const sides = [[0,2,3,1],[4,5,7,6],[0,1,5,4],[2,6,7,3],[0,4,6,2],[1,3,7,5]];
 const defaultGuides = Object.freeze({halfWidth:225,wallHeight:150,floorDepth:500,spacing:50,wallRows:6});
@@ -157,14 +157,14 @@ const pointsAttr = ps => ps.map(p => p.join(",")).join(" ");
 const line = ([x1,y1], [x2,y2], stroke, width = 1, more = {}) =>
   svgNode("line", {x1,y1,x2,y2,stroke,"stroke-width":width,...more});
 const label = (x,y,value,fill,more={}) => svgNode("text", {x,y,fill,"font-size":12,...more}, value);
-const cameraColor = "#9ad7ff";
+const cameraColor = "#9ab8ff";
 
 function cameraMarker([x,y], wall, tcpDepth) {
   const angle = Math.atan2(wall[1]-y, wall[0]-x) * 180 / Math.PI;
   const marker = svgNode("g", {transform:`translate(${x} ${y})`});
   const icon = svgNode("g", {transform:`rotate(${angle})`, stroke:cameraColor, "stroke-width":1.5, "stroke-linejoin":"round"});
-  icon.append(svgNode("rect", {x:-28,y:-8,width:17,height:16,rx:3,fill:"#284857"}),
-    svgNode("path", {d:"M-11 -3 L-3 -7 V7 L-11 3 Z",fill:"#426d80"}),
+  icon.append(svgNode("rect", {x:-28,y:-8,width:17,height:16,rx:3,fill:"#24355b"}),
+    svgNode("path", {d:"M-11 -3 L-3 -7 V7 L-11 3 Z",fill:"#425580"}),
     svgNode("circle", {cx:0,cy:0,r:2.5,fill:cameraColor}),
     svgNode("path", {d:"M5 0 H21 M17 -4 L21 0 L17 4",fill:"none"}));
   marker.append(svgNode("title", {}, "카메라 위치 · TCP까지 "+tcpDepth+" mm"), icon,
@@ -222,13 +222,13 @@ function drawScene(el, settings, model, anglesText, {wall,floor}) {
   scene.setAttribute("viewBox","0 0 "+w+" "+h);
   const nodes = [];
   if (floor) {
-    nodes.push(svgNode("polygon",{points:pointsAttr(floor.points.map(project)),fill:"#25463c",stroke:"#81c5a5"}));
-    for (const [a,b] of floor.lines) nodes.push(line(project(a),project(b),"#629d85",.8));
+    nodes.push(svgNode("polygon",{points:pointsAttr(floor.points.map(project)),fill:"#232e48",stroke:"#8195c5"}));
+    for (const [a,b] of floor.lines) nodes.push(line(project(a),project(b),"#62749d",.8));
   }
-  nodes.push(svgNode("polygon",{points:pointsAttr(wall.points.map(project)),fill:"#364a51",
-    stroke:objectPoints.length ? "#90a7a9" : "#ffc08b","stroke-width":1.3}));
+  nodes.push(svgNode("polygon",{points:pointsAttr(wall.points.map(project)),fill:"#343d53",
+    stroke:objectPoints.length ? "#9098a9" : "#ffc08b","stroke-width":1.3}));
   if (!side) {
-    for (const [a,b] of wall.lines) nodes.push(line(project(a),project(b),"#587074",.7));
+    for (const [a,b] of wall.lines) nodes.push(line(project(a),project(b),"#586074",.7));
   }
   nodes.push(line(lensPoint,wallCenter,cameraColor,1,{"stroke-dasharray":"4 5"}));
   const faces = parts.flatMap(({points,palette,faces = sides,id}) => faces.map((indices,i) => {
@@ -238,7 +238,7 @@ function drawScene(el, settings, model, anglesText, {wall,floor}) {
   })).sort((a,b) => a.depth-b.depth);
   for (const f of faces) nodes.push(svgNode("polygon",{points:pointsAttr(f.points.map(project)),fill:f.color,
     ...(f.id ? {"data-arm-part":f.id} : {}),
-    stroke:f.example ? "#ffc08b" : "#24383d","stroke-dasharray":f.example ? "4 2" : "none","stroke-width":.85,"stroke-linejoin":"round"}));
+    stroke:f.example ? "#ffc08b" : "#222b3f","stroke-dasharray":f.example ? "4 2" : "none","stroke-width":.85,"stroke-linejoin":"round"}));
   const objectLabel = model.exampleObject ? "예시 객체" : "탐지 상자 기준 물체";
   if (face.length) {
     nodes.push(svgNode("polygon",{points:pointsAttr(face.map(project)),fill:"none",stroke:"#ffc08b","stroke-width":1.5}));
@@ -246,17 +246,17 @@ function drawScene(el, settings, model, anglesText, {wall,floor}) {
   if (objectPoints.length) nodes.push(label(w-14,21,objectLabel,"#ffc08b",{"text-anchor":"end"}));
   nodes.push(cameraMarker(lensPoint,wallCenter,settings.tcpDepth));
   const end = project(scaled(toolZ, 30));
-  if (Math.hypot(...sub(end,origin)) > 1) nodes.push(line(origin,end,"#83ead3",2.8,{"marker-end":"url(#pick-z-arrow)"}));
-  nodes.push(svgNode("circle",{cx:origin[0],cy:origin[1],r:4.6,fill:"#27363a",stroke:"#ffe4a2","stroke-width":2}));
+  if (Math.hypot(...sub(end,origin)) > 1) nodes.push(line(origin,end,"#83c9ea",2.8,{"marker-end":"url(#pick-z-arrow)"}));
+  nodes.push(svgNode("circle",{cx:origin[0],cy:origin[1],r:4.6,fill:"#262c3b",stroke:"#ffe4a2","stroke-width":2}));
   if (tip) {
     const a = project(tip), b = project([frontX,tip[1],tip[2]]);
     nodes.push(line(a,b,"#ffba81",2,{"stroke-dasharray":"3 2"}));
     for (const [x,y] of [a,b]) nodes.push(line([x,y-4],[x,y+4],"#ffba81",1.5));
   }
   const [wx,wy] = project(wall.points[3]);
-  nodes.push(label(Math.min(w-22,wx+5),Math.max(14,wy-4),"벽","#d3e5e5"));
+  nodes.push(label(Math.min(w-22,wx+5),Math.max(14,wy-4),"벽","#d3d8e5"));
   if (floor) {
-    nodes.push(label(w-10,h-6,"바닥 0 mm · BASE Z "+floor.baseZ+" mm","#ade4c6",{"text-anchor":"end"}));
+    nodes.push(label(w-10,h-6,"바닥 0 mm · BASE Z "+floor.baseZ+" mm","#add3e4",{"text-anchor":"end"}));
   }
   if (model.projectedCenter) {
     const [x,y] = project(model.projectedCenter);
@@ -268,11 +268,11 @@ function drawScene(el, settings, model, anglesText, {wall,floor}) {
   const base = [Math.max(41,Math.min(baseX,w-178)),h-33];
   for (const [i,name] of ["X","Y","Z"].entries()) {
     const [dx,dy] = xy(camera.map(axis => axis[i])), to = [base[0]+dx*21,base[1]+dy*21];
-    if (Math.hypot(dx,dy) > .1) nodes.push(line(base,to,"#a0b3ba",1.2),label(to[0]+dx*6,to[1]+dy*5+3,name,"#c0d2d8",{"font-size":10,"text-anchor":"middle"}));
+    if (Math.hypot(dx,dy) > .1) nodes.push(line(base,to,"#a0a8ba",1.2),label(to[0]+dx*6,to[1]+dy*5+3,name,"#c0c7d8",{"font-size":10,"text-anchor":"middle"}));
   }
-  nodes.push(label(base[0]-1,h-6,"BASE","#a0b3ba",{"font-size":10,"text-anchor":"middle"}));
+  nodes.push(label(base[0]-1,h-6,"BASE","#a0a8ba",{"font-size":10,"text-anchor":"middle"}));
   const openingHint = opening === null ? "손가락 간격은 예시입니다." : "";
-  if (openingHint) nodes.push(label(14,21,openingHint,"#d3e5e5"));
+  if (openingHint) nodes.push(label(14,21,openingHint,"#d3d8e5"));
   world.replaceChildren(...nodes);
   const past = gap < -.05;
   el.gapLabel.textContent = past ? "앞면을 지난 깊이" : "손끝 → 앞면";

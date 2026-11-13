@@ -1,12 +1,12 @@
 :root {
-  --paper: light-dark(#f5f7f7,#101820);
-  --surface: light-dark(#fff,#17222c);
-  --ink: light-dark(#17272b,#e5efef);
-  --sub: light-dark(#506269,#a6b8be);
-  --line: light-dark(#dce3e3,#33414a);
-  --soft: light-dark(#eef2f2,#202e37);
-  --mint: light-dark(#08775e,#77e2bd);
-  --mint-bg: light-dark(#dff3eb,#203d37);
+  --paper: light-dark(#f5f6f7,#0f1421);
+  --surface: light-dark(#fff,#151d2e);
+  --ink: light-dark(#161c2d,#e5e8ef);
+  --sub: light-dark(#505769,#a6adbe);
+  --line: light-dark(#dcdee3,#31394c);
+  --soft: light-dark(#eeeff2,#1e2639);
+  --mint: light-dark(#085477,#77c0e2);
+  --mint-bg: light-dark(#dfedf3,#1e283f);
   --amber: light-dark(#82501b,#f3bd76);
   --amber-bg: light-dark(#fbefdc,#453628);
   --red: light-dark(#9c4936,#efad9a);
@@ -32,13 +32,13 @@ body {
 }
 h1 {
   font-size: clamp(24px,3vw,32px);
-  font-weight: 720;
+  font-weight: 600;
   letter-spacing: -.065em;
   line-height: 1.18;
 }
 h2 {
   font-size: 16px;
-  font-weight: 680;
+  font-weight: 600;
   letter-spacing: -.045em;
   line-height: 1.4;
 }
@@ -167,7 +167,7 @@ button:disabled {
 .camera {
   position: relative;
   aspect-ratio: 16 / 9;
-  background: #243038;
+  background: #22293a;
   overflow: hidden;
   color: #fff;
 }
@@ -183,8 +183,8 @@ button:disabled {
   left: 8px;
   padding: 2px 5px;
   border-radius: 3px;
-  background: #172329cd;
-  color: #f5f7f7;
+  background: #161c2acd;
+  color: #f5f6f7;
   font: 10px/1.4 var(--mono);
 }
 .camera-state.ready::before { background: var(--mint); }
@@ -243,7 +243,7 @@ button:disabled {
   text-align: center;
   overflow-wrap: anywhere;
 }
-.camera-empty a { color: #a1f3d1; }
+.camera-empty a { color: #a1d9f3; }
 .metrics b { font-weight: inherit; }
 .metrics {
   display: grid;
@@ -278,7 +278,7 @@ button:disabled {
   background: var(--mint-bg);
   color: var(--mint);
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 600;
   padding: 3px 7px;
   border-radius: 20px;
   white-space: nowrap;
@@ -292,7 +292,7 @@ button:disabled {
   color: var(--sub);
 }
 .order-no {
-  font: 650 24px/1.2 var(--mono);
+  font: 600 24px/1.2 var(--mono);
   letter-spacing: -.055em;
 }
 .order-name {
@@ -353,7 +353,7 @@ button:disabled {
 .main-btn {
   background: var(--mint);
   border-color: var(--mint);
-  color: light-dark(#fff,#102c22);
+  color: light-dark(#fff,#10232c);
 }
 .stop-btn {
   color: var(--red);
@@ -409,7 +409,7 @@ button:disabled {
 }
 .event-type {
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 600;
   color: var(--mint);
 }
 .tabs {
@@ -489,7 +489,7 @@ tbody tr:last-child td {
 .pipeline .current {
   background: var(--mint-bg);
   color: var(--mint);
-  font-weight: 700;
+  font-weight: 600;
 }
 .pipeline [aria-disabled=true] {
   background: transparent;

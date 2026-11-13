@@ -176,21 +176,21 @@ export function connectWorkPlane(root) {
       ctx.beginPath();
       corners.forEach(({pixel}, i) => i ? ctx.lineTo(...pixel) : ctx.moveTo(...pixel));
       ctx.closePath();
-      ctx.strokeStyle = "#a0ffcf"; ctx.lineWidth = 2; ctx.stroke();
+      ctx.strokeStyle = "#a0e1ff"; ctx.lineWidth = 2; ctx.stroke();
     }
     corners.forEach((p, i) => {
       if (!p.pixel) return;
       const [x, y] = p.pixel;
-      marker(ctx, x, y, radius, i === corner ? "#ffcf61" : "#a0ffcf");
+      marker(ctx, x, y, radius, i === corner ? "#ffcf61" : "#a0e1ff");
       ctx.font = "bold " + Math.max(16, radius * 3) + "px sans-serif";
-      ctx.lineWidth = 4; ctx.strokeStyle = "#18302b"; ctx.fillStyle = "white";
+      ctx.lineWidth = 4; ctx.strokeStyle = "#161e32"; ctx.fillStyle = "white";
       ctx.strokeText(String(i + 1), x + radius, y); ctx.fillText(String(i + 1), x + radius, y);
     });
     const index = measureIndex;
     const highlight = context => {
       if (index < 0) return;
       const obj = packet.objects[index], [x1,y1,x2,y2] = obj.xyxy;
-      context.strokeStyle = "#80ffd0"; context.lineWidth = 4; context.strokeRect(x1,y1,x2-x1,y2-y1);
+      context.strokeStyle = "#80d7ff"; context.lineWidth = 4; context.strokeRect(x1,y1,x2-x1,y2-y1);
       marker(context,...center(obj),radius,"#ffcf61");
     };
     highlight(ctx);

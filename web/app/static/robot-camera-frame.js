@@ -30,7 +30,7 @@ export function marker(ctx, x, y, r, color) {
   ctx.arc(x, y, r, 0, Math.PI * 2);
   ctx.fillStyle = color;
   ctx.fill();
-  ctx.strokeStyle = "#142d29";
+  ctx.strokeStyle = "#14252d";
   ctx.lineWidth = 2;
   ctx.stroke();
 }

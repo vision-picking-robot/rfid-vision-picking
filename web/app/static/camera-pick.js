@@ -37,7 +37,7 @@ export function connectCameraPick(panel) {
     const radius = Math.max(5, canvas.width / 150);
     if (selected < 0) return;
     const obj = packet.objects[selected], [x1,y1,x2,y2] = obj.xyxy;
-    ctx.strokeStyle = "#80ffd0"; ctx.lineWidth = 4; ctx.strokeRect(x1,y1,x2-x1,y2-y1);
+    ctx.strokeStyle = "#80d7ff"; ctx.lineWidth = 4; ctx.strokeRect(x1,y1,x2-x1,y2-y1);
     marker(ctx,...center(obj),radius,"#ffcf61");
   }
 
@@ -211,7 +211,7 @@ export function connectCameraPick(panel) {
     if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
     const ctx = canvas.getContext("2d");
     ctx.clearRect(0, 0, width, height);
-    for (const obj of packet.objects) marker(ctx, ...center(obj), Math.max(4, width / 220), "#a0ffcf");
+    for (const obj of packet.objects) marker(ctx, ...center(obj), Math.max(4, width / 220), "#a0e1ff");
     if (el.status.textContent === "탐지 영상 대기 중") el.status.textContent = "영상에서 파지할 객체를 선택하세요.";
   }
   return {update, dispose() {

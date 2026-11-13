@@ -107,9 +107,9 @@ export function connectArmRenderer(canvas,overlay,graphics,signal,onOrbit) {
     }
     if(!ready){
       const path=frames.map(m=>screen(transformPoint(m,[0,0,0])));
-      for(let i=1;i<path.length;i++)nodes.push(svgNode("line",{x1:path[i-1][0],y1:path[i-1][1],x2:path[i][0],y2:path[i][1],stroke:"#9cd2c5","stroke-width":5}));
+      for(let i=1;i<path.length;i++)nodes.push(svgNode("line",{x1:path[i-1][0],y1:path[i-1][1],x2:path[i][0],y2:path[i][1],stroke:"#9cacd2","stroke-width":5}));
       if(data.gripper){const mount=gripperMount(frames[6]);for(const p of mountedGripperParts(data.gripper.opening_mm))for(const face of p.faces)
-        nodes.push(svgNode("polygon",{points:face.map(i=>screen(transformPoint(mount,p.points[i])).join(",")).join(" "),fill:"none",stroke:"#b9cbcc","stroke-width":1}));}
+        nodes.push(svgNode("polygon",{points:face.map(i=>screen(transformPoint(mount,p.points[i])).join(",")).join(" "),fill:"none",stroke:"#b9bfcc","stroke-width":1}));}
       const box=parcelBoxGeometry(data.parcelBox);
       if(box)for(const face of faces.filter((_,i)=>i!==1))nodes.push(svgNode("polygon",{points:face.map(i=>screen(box.points[i]).join(",")).join(" "),fill:"none",stroke:"#e5b96f","stroke-width":1.5}));
     }
@@ -121,7 +121,7 @@ export function connectArmRenderer(canvas,overlay,graphics,signal,onOrbit) {
     if(data.simulation?.route)for(const [i,point]of data.simulation.route.entries())if(!data.simulation.recipe||(point.marker&&point.number===data.simulation.segment+1))label(point.pose.slice(0,3),data.simulation.recipe?point.number+" · "+point.title:"지점 "+(i+1),[25,-45]);
     if(data.simulation?.route)for(const point of data.simulation.route)if(point.via_pose&&point.number===data.simulation.segment+1)label(point.via_pose.slice(0,3),'movec · 원호 경유 TCP',[25,-25]);
     if(data.product){label(transformPoint(data.product.frame,[0,0,0]),data.product.holding?"가상 상품 · 파지":data.product.released?"가상 상품 · 놓임":"가상 상품",[12,24]);label(data.product.approach.slice(0,3),data.product.region==='floor'?'수직 접근':'수평 접근',[12,-18]);}
-    if(!ready&&data.simulation?.path)nodes.push(svgNode("polyline",{points:data.simulation.path.map(p=>screen(p).join(",")).join(" "),fill:"none",stroke:"#85e8cf","stroke-width":2}));
+    if(!ready&&data.simulation?.path)nodes.push(svgNode("polyline",{points:data.simulation.path.map(p=>screen(p).join(",")).join(" "),fill:"none",stroke:"#85c9e8","stroke-width":2}));
     if(data.guides){
       const g=data.guides;label(g.lens,"카메라 · 가이드",[-25,-22]);if(data.product?.region==='shelf')label(data.product.initial,'가상 선반',[20,-28]);else label(g.wall.points[2],"벽",[0,-10]);
       if(g.target&&!data.product)label(g.target,"교시 TCP",[18,22]);

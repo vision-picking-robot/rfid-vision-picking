@@ -76,13 +76,13 @@ for (const item of destinations) {
   nav.append(link);
 }
 rail.innerHTML = '<div class="station-brand"><span class="brand-mark">' + icon("scan-line") +
-  '</span><div>Vision Lab<small>LOCAL WORKSPACE</small></div></div>';
+  '</span><div>E0509 비전 피킹<small>WEB CONSOLE</small></div></div>';
 rail.append(nav);
 const mode = document.createElement("div");
 mode.className = "rail-status";
 mode.textContent = training ? "로컬 모델 학습" : document.body.dataset.workspace === "robot" ? "E0509 · 유선 LAN" : "패킹 시뮬레이션";
 const controls=document.createElement('div');controls.className='rail-controls';
-const stop=document.createElement('button');stop.type='button';stop.id='robot-global-stop';stop.className='rail-stop';stop.textContent='■ 중단';stop.setAttribute('aria-label','로봇 작업 중단');
+const stop=document.createElement('button');stop.type='button';stop.id='robot-global-stop';stop.className='rail-stop';stop.textContent='작업 중단';stop.setAttribute('aria-label','로봇 작업 중단');
 const stopState=document.createElement('p');stopState.className='rail-stop-state';stopState.setAttribute('role','status');stopState.hidden=true;
 const standby=document.createElement('button');standby.type='button';standby.id='robot-standby';standby.className='rail-standby';standby.textContent='STANDBY 복구';
 const standbyState=document.createElement('p');standbyState.className='rail-standby-state';standbyState.setAttribute('role','status');standbyState.hidden=true;
