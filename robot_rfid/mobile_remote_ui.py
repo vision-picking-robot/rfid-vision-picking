@@ -683,7 +683,7 @@ MOBILE_REMOTE_HTML = """<!DOCTYPE html>
           <span class="slot-tag">SLOT 02</span>
           <span class="slot-action-label">DISPATCH</span>
         </div>
-        <div class="slot-name">복숭아녹차 (페트병)</div>
+        <div class="slot-name">복숭아녹차 340ml (페트병)</div>
         <div class="slot-uid">UID 0B71E75D</div>
       </button>
 

@@ -49,12 +49,12 @@ def test_existing_db_moves_product_to_seed_uid_with_history(tmp_path):
     Database(path).initialize()
     with sqlite3.connect(path) as db:  # simulate a DB created with an older seed UID and one finished task
         db.execute('PRAGMA foreign_keys=OFF')
-        db.execute("UPDATE product_tag_mappings SET tag_uid='0BE5715D' WHERE sku_code='LOTTE-PEPERO-01'")
+        db.execute("UPDATE product_tag_mappings SET tag_uid='0BE5715D' WHERE sku_code='SNACK-CHOCOCHIP-01'")
         db.execute("INSERT INTO tasks(task_id,event_id,tag_uid,quantity,completed,status,created_at) "
                    "VALUES ('t1','e1','0BE5715D',1,1,'COMPLETED','2026-11-10')")
     Database(path).initialize()
     with sqlite3.connect(path) as db:
-        assert db.execute("SELECT tag_uid FROM product_tag_mappings WHERE sku_code='LOTTE-PEPERO-01'").fetchone()[0] == '0B71E55D'
+        assert db.execute("SELECT tag_uid FROM product_tag_mappings WHERE sku_code='SNACK-CHOCOCHIP-01'").fetchone()[0] == '0B71E55D'
         assert db.execute("SELECT tag_uid FROM tasks WHERE task_id='t1'").fetchone()[0] == '0B71E55D'
         assert db.execute('SELECT COUNT(*) FROM product_tag_mappings').fetchone()[0] == 4
         assert db.execute('PRAGMA foreign_key_check').fetchall() == []
@@ -93,8 +93,18 @@ def test_retired_plush_toy_tag_is_dropped_from_an_existing_db(tmp_path):
 def test_seed_display_names_follow_the_real_items(tmp_path):
     path = tmp_path / 'rfid.db'
     Database(path).initialize()
-    with sqlite3.connect(path) as db:  # a DB created with the old item names
-        db.execute("UPDATE product_tag_mappings SET product_name='아몬드 빼빼로' WHERE sku_code='LOTTE-PEPERO-01'")
+    with sqlite3.connect(path) as db:  # a DB created with the old item names and SKU codes, with history
+        db.execute("UPDATE product_tag_mappings SET product_name='아몬드 빼빼로', sku_code='LOTTE-PEPERO-01' "
+                   "WHERE tag_uid='0B71E55D'")
+        db.execute("UPDATE product_tag_mappings SET product_name='복숭아녹차 (페트병)', sku_code='BEV-PET-500ML' "
+                   "WHERE tag_uid='0B71E75D'")
+        db.execute("INSERT INTO tasks(task_id,event_id,tag_uid,quantity,completed,status,created_at) "
+                   "VALUES ('t1','e1','0B71E55D',1,1,'COMPLETED','2026-11-12')")
     Database(path).initialize()
-    assert Database(path).product('0B71E55D')['product_name'] == '쫀득초코칩'
-    assert Database(path).product('0B71E75D')['product_name'] == '복숭아녹차 (페트병)'
+    pepero, tea = Database(path).product('0B71E55D'), Database(path).product('0B71E75D')
+    assert (pepero['sku_code'], pepero['product_name']) == ('SNACK-CHOCOCHIP-01', '쫀득초코칩')
+    assert (tea['sku_code'], tea['product_name']) == ('BEV-PET-340ML', '복숭아녹차 340ml (페트병)')
+    assert pepero['yolo_class_name'] == 'snack_pepero'  # configs and zones still use this key
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT tag_uid FROM tasks WHERE task_id='t1'").fetchone()[0] == '0B71E55D'
+        assert db.execute('SELECT COUNT(*) FROM product_tag_mappings').fetchone()[0] == 4

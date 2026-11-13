@@ -43,7 +43,7 @@ products:
     virtual: {x: 450.0, y: 50.0, rz: 0.0, grasp_height_from_floor: 150.0}
     grip_force: null
 
-  beverage_pet:       # DB yolo_class_name 호환 (복숭아녹차 페트병, 4구역)
+  beverage_pet:       # DB yolo_class_name 호환 (복숭아녹차 340ml 페트병, 4구역)
     real:
       x: 450.0
       y: 50.0

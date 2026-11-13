@@ -58,14 +58,17 @@ def match_uid(raw: str, known_uids) -> str:
 
 
 SEEDS = [
-    ('0B71E55D', 'LOTTE-PEPERO-01', '쫀득초코칩', 'CONFECTIONERY', 0, 'snack_pepero', '2026-11-01 13:45:00', '2027-12-25 19:00:00', 2500, 'BOX-01'),
-    ('0B71E75D', 'BEV-PET-500ML', '복숭아녹차 (페트병)', 'BEVERAGE', 1, 'beverage_pet', '2026-11-05 09:30:00', '2027-05-04 23:59:59', 1600, 'BOX-02'),
+    ('0B71E55D', 'SNACK-CHOCOCHIP-01', '쫀득초코칩', 'CONFECTIONERY', 0, 'snack_pepero', '2026-11-01 13:45:00', '2027-12-25 19:00:00', 2500, 'BOX-01'),
+    ('0B71E75D', 'BEV-PET-340ML', '복숭아녹차 340ml (페트병)', 'BEVERAGE', 1, 'beverage_pet', '2026-11-05 09:30:00', '2027-05-04 23:59:59', 1600, 'BOX-02'),
     ('0B71E65D', 'CAN-SPAM-200G', '스팸 클래식 200g', 'CANNED', 2, 'canned_meat', '2026-10-15 10:00:00', '2029-10-14 23:59:59', 4800, 'BOX-03'),
     ('0B71ED5D', 'SAN-WIPES-100', '물티슈', 'SANITARY', 3, 'wet_wipes', '2026-11-02 16:20:00', '2028-11-01 23:59:59', 2200, 'BOX-04'),
 ]
 SEED_TAGS = SEEDS
 # Tags once seeded but not on any real product (the plush toy has no tag); initialize() drops them from old DBs.
 REMOVED_SEED_TAGS = ('0B71EC5D',)
+# SKU codes renamed to match the real items (old -> new); initialize() renames them in old DBs.
+# yolo_class_name stays 'snack_pepero': it is the key the configs, zones and poses use.
+RENAMED_SKUS = {'LOTTE-PEPERO-01': 'SNACK-CHOCOCHIP-01', 'BEV-PET-500ML': 'BEV-PET-340ML'}
 
 
 class ActiveTaskError(ValueError):
@@ -118,6 +121,7 @@ class Database:
                 CREATE UNIQUE INDEX IF NOT EXISTS one_active_tag ON tasks(tag_uid)
                     WHERE status IN ('READY','PICKING');
             ''')
+        self._rename_skus()
         self._migrate_seed_uids()
         self._drop_removed_tags()
         with self.connect() as db:
@@ -128,6 +132,15 @@ class Database:
             # Seeded products keep the seed's display name (the real items changed, the SKUs did not).
             db.executemany('UPDATE product_tag_mappings SET product_name=? WHERE sku_code=?',
                            [(seed[2], seed[1]) for seed in SEEDS])
+
+    def _rename_skus(self):
+        """Rename old seed SKU codes in place (tasks reference tag_uid, so history is untouched)."""
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            for old, new in RENAMED_SKUS.items():
+                if db.execute('SELECT 1 FROM product_tag_mappings WHERE sku_code=?', (new,)).fetchone():
+                    continue
+                db.execute('UPDATE product_tag_mappings SET sku_code=? WHERE sku_code=?', (new, old))
 
     def _migrate_seed_uids(self):
         """Move a seeded product to its new tag UID (and its task history) when the seed changed."""

@@ -2,7 +2,7 @@
 from .store import DomainError, now, uid
 
 SEED_PRODUCTS = (
-    ("PK-001", "빼빼로", 10), ("PK-002", "생수", 5), ("PK-003", "스팸", 3),
+    ("PK-001", "쫀득초코칩", 10), ("PK-002", "생수", 5), ("PK-003", "스팸", 3),
     ("PK-004", "물티슈", 1), ("PK-005", "인형", 2),
 )
 ORDER_SKUS = ("PK-001", "PK-002", "PK-004")
@@ -16,8 +16,11 @@ class Packing:
                 for sku, name, stock in SEED_PRODUCTS:
                     write("product", self.product(sku, name, "개", stock))
                 write("packing_order", self.new_order(123, "packing"))
-                self.log(write, "주문", "주문 #123 접수 · 빼빼로, 생수, 물티슈 각 1개 예약")
+                self.log(write, "주문", "주문 #123 접수 · 쫀득초코칩, 생수, 물티슈 각 1개 예약")
             db = self.store.db
+            # Stores seeded before the real item changed still call PK-001 빼빼로.
+            db.execute("UPDATE products SET name='쫀득초코칩', alias=CASE WHEN alias='빼빼로' THEN '쫀득초코칩' "
+                       "ELSE alias END WHERE sku='PK-001' AND name='빼빼로'")
             sample = db.execute("SELECT customer_id FROM orders JOIN customers ON customers.id=customer_id "
                                 "WHERE orders.public_id='packing-123' AND customers.name='홍길동'").fetchone()
             if sample:
