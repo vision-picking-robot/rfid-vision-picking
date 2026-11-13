@@ -1,5 +1,7 @@
 """Browser transcripts use the original packing processor on every OS."""
 import asyncio
+import re
+import time
 import logging
 from datetime import datetime
 from uuid import uuid4
@@ -21,6 +23,15 @@ class Transcript(BaseModel):
     turn: int = Field(ge=1)
     text: str = Field(min_length=1, max_length=500)
 
+ECHO_WINDOW_S = 12.0   # a reply is at most a few seconds long; the recogniser may finish a bit later
+ECHO_MIN_CHARS = 6     # short answers ("정지", "대기", "주문 확정") stay commands even right after a reply
+ECHO_OVERLAP = 0.7     # share of the heard letter pairs that also appear in the reply (allows mishearing)
+
+
+def squash(text):
+    return re.sub(r"[^가-힣a-z0-9]", "", str(text or "").lower())
+
+
 class Voice:
     def __init__(self, packing, enabled, *, barge_in=False):
         self.packing, self.enabled = packing, enabled
@@ -34,6 +45,7 @@ class Voice:
         self.auto = None           # robot_voice.AutoRun while "피킹 로봇 가동" runs
         self.announcement, self.announce_seq = '', 0   # spoken by the browser when announce_seq changes
         self.history = []          # recent transcripts and what they did (GET /api/voice/history)
+        self.said = []             # (monotonic time, text) of recent replies/announcements: echo guard
         self.lock = asyncio.Lock()
 
     def status(self):
@@ -44,7 +56,27 @@ class Voice:
 
     def announce(self, text):
         self.announcement, self.announce_seq = text, self.announce_seq + 1
+        self._spoken(text)
         log.info("[음성 안내] %s", text)
+
+    def _spoken(self, text):
+        now = time.monotonic()
+        self.said = [(t, s) for t, s in self.said if now - t < ECHO_WINDOW_S] + [(now, text)]
+
+    def is_echo(self, heard):
+        """True when `heard` is (mostly) a piece of something we said in the last ECHO_WINDOW_S seconds,
+        e.g. "일시 정지 명령은" after "일시정지 명령을 …". Short words ("정지", "네") are never echo: the
+        operator must always be able to stop the robot or answer a question that quotes the answer."""
+        h = squash(heard)
+        if len(h) < ECHO_MIN_CHARS:
+            return False
+        pairs = [h[i:i + 2] for i in range(len(h) - 1)]
+        now = time.monotonic()
+        for t, s in self.said:
+            said = squash(s)
+            if now - t < ECHO_WINDOW_S and sum(p in said for p in pairs) >= ECHO_OVERLAP * len(pairs):
+                return True
+        return False
 
     async def start(self):
         pass  # Browser owns microphone permission; no server audio subprocess.
@@ -75,6 +107,13 @@ class Voice:
             if not self.session or (data.session, data.turn) != (self.session, self.turn):
                 raise DomainError('만료되었거나 중복된 음성 명령입니다.', 409)
             self.turn += 1
+            if self.is_echo(data.text):
+                # Our own reply coming back through the laptop speaker: never a command.
+                log.info("[Web Speech API 에코 무시] text='%s'", data.text)
+                self.history = (self.history + [dict(
+                    time=datetime.now().astimezone().isoformat(timespec='seconds'), text=data.text,
+                    reply=None, echo=True, auto=self.auto.info() if self.auto else None)])[-50:]
+                return dict(self.status(), turn=self.turn, echo=True)
             self.state, self.transcript = 'processing', data.text
             intent = INTENTS.get(normalized(data.text))
             log.info("[Web Speech API 수신] session=%s, turn=%s, text='%s', normalized='%s', intent=%s",
@@ -84,6 +123,7 @@ class Voice:
                 time=datetime.now().astimezone().isoformat(timespec='seconds'), text=data.text,
                 reply=robot_reply, auto=self.auto.info() if self.auto else None)])[-50:]
             if robot_reply is not None:
+                self._spoken(robot_reply)
                 if self.session == data.session:
                     self.reply, self.confirming = robot_reply, False
                     self.state = 'listening'
@@ -106,6 +146,7 @@ class Voice:
                     await self.stop()
                     raise
                 else:
+                    self._spoken(answer.text)
                     if self.session == data.session:
                         self.reply, self.confirming = answer.text, answer.confirm
                         log.info("[Web Speech API 응답] session=%s, reply='%s', confirming=%s",

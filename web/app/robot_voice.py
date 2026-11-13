@@ -78,12 +78,26 @@ def is_stop(action):
     return action is not None and action.kind == "control" and action.command in ("pause", "emergency_stop")
 
 
+# Everything the robot says must not contain a command word: the laptop microphone hears the speaker,
+# and "일시정지 명령을 전달했습니다" heard back was a new pause -> endless loop (test_robot_voice checks this).
 QUESTION = {
-    "reset_stop": "비상 정지를 해제할까요? 해제하면 로봇이 다시 움직일 수 있습니다.",
-    "scan_dispatch": "리더기로 가서 태그를 읽을까요?",
-    "resume": "작업을 재개할까요?",
-    "home": "홈 자세로 이동할까요?",
+    "reset_stop": "비상 잠금을 풀까요? 풀면 로봇이 다시 움직일 수 있습니다.",
+    "scan_dispatch": "태그를 읽으러 갈까요?",
+    "resume": "작업을 이어 갈까요?",
+    "home": "처음 자세로 돌아갈까요?",
 }
+
+# Spoken after a control command (the phone/API message names the command, e.g. "일시정지 명령을 …").
+CONTROL_REPLY = {
+    "pause": "알겠습니다. 로봇이 다음 동작 전에 기다립니다.",
+    "emergency_stop": "로봇을 즉시 세웠습니다.",
+    "reset_stop": "비상 잠금을 풀었습니다. 로봇이 다시 움직일 수 있습니다.",
+    "resume": "작업을 이어 갑니다.",
+    "start": "작업을 시작합니다.",
+    "home": "처음 자세로 돌아갑니다.",
+    "scan_dispatch": "태그를 읽으러 갑니다.",
+}
+NOT_CONNECTED = " 다만 로봇 사이클이 연결되어 있지 않아 로봇이 움직이지 않습니다."
 
 
 def question(action):
@@ -139,7 +153,10 @@ class RobotVoice:
                 return f"{action.label} 작업을 등록했습니다. 로봇이 집으러 갑니다.{tail}" if result["created"] \
                     else f"{josa(action.label, '은', '는')} 이미 대기 중인 작업이 있습니다."
             packet = await self.app.state.robot_control(action.command)
-            return packet["message"]
+            reply = CONTROL_REPLY.get(action.command)
+            if reply is None:
+                return packet["message"]
+            return reply + ("" if packet.get("robot_connected", True) else NOT_CONNECTED)
         except HTTPException as exc:
             return f"{josa(action.label or '명령', '을', '를')} 실행하지 못했습니다: {exc.detail}"
 

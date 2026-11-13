@@ -51,13 +51,13 @@ def test_dashboard_voice_drives_the_robot_paths(tmp_path):
         scan = client.get('/api/v1/last-scan').json()['last_scan']
         assert scan['source'] == 'voice' and scan['accepted']
         # stop runs at once, even while a question is pending
-        assert '홈 자세로 이동할까요' in say('홈으로')
+        assert '처음 자세로 돌아갈까요' in say('홈으로')
         say('정지')
         status = client.get('/api/v1/mobile/status').json()
         assert status['emergency_stopped'] and status['commands'][-1]['command'] == 'emergency_stop'
         assert not any(c['command'] == 'home' for c in status['commands'])
         # moving again needs the asked-back reset
-        assert '해제할까요' in say('정지 해제')
+        assert '비상 잠금을 풀까요' in say('정지 해제')
         say('네')
         assert not client.get('/api/v1/mobile/status').json()['emergency_stopped']
         # the packing demo still answers its own phrases; unknown speech gets the help text
@@ -88,3 +88,38 @@ def test_particles_follow_the_item_name():
     from app.robot_voice import josa
     assert josa('스팸', '을', '를') == '스팸을' and josa('물티슈', '을', '를') == '물티슈를'
     assert josa('복숭아녹차', '은', '는') == '복숭아녹차는' and josa('쫀득초코칩', '은', '는') == '쫀득초코칩은'
+
+
+def test_nothing_the_robot_says_is_itself_a_command():
+    """The laptop microphone hears the speaker: a reply containing "일시정지" paused the robot again and
+    again (2026-11-13). Every fixed robot reply and question must parse to no command."""
+    from app import robot_voice as rv
+    spoken = [*rv.QUESTION.values(), *rv.CONTROL_REPLY.values(), rv.NOT_CONNECTED.strip()]
+    for text in spoken:
+        assert parse(text) is None, text
+
+
+def test_own_reply_heard_back_is_ignored_but_short_answers_are_not(tmp_path):
+    with TestClient(create_app(Settings(camera_autostart=False, voice_enabled=True), state_root=tmp_path)) as client:
+        wake = client.post('/api/voice/wake').json()
+        turn = [wake['turn']]
+
+        def say(text):
+            response = client.post('/api/voice/transcript', json=dict(session=wake['session'], turn=turn[0], text=text))
+            assert response.status_code == 200, response.text
+            turn[0] = response.json()['turn']
+            return response.json()
+
+        client.get('/api/v1/mobile/status', params={'robot': 'remote_rfid'})  # robot cycle connected
+        reply = say('대기')['reply']
+        assert reply == '알겠습니다. 로봇이 다음 동작 전에 기다립니다.'
+        before = len(client.get('/api/v1/mobile/status').json()['commands'])
+        for heard in ('로봇이 다음 동작 전에', '알겠습니다 로봇이 다음 동작', '로봇이 다음 동장 전에 기다립니다'):
+            assert say(heard).get('echo') is True, heard  # pieces of the reply, also slightly misheard
+        assert len(client.get('/api/v1/mobile/status').json()['commands']) == before
+        # a short command right after the reply still works: the operator can always stop the robot
+        say('정지')
+        assert client.get('/api/v1/mobile/status').json()['emergency_stopped']
+        history = client.get('/api/voice/history').json()
+        entries = history if isinstance(history, list) else history.get('history', [])
+        assert sum(bool(e.get('echo')) for e in entries) == 3

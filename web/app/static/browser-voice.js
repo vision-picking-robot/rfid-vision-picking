@@ -22,10 +22,19 @@ export class BrowserVoice {
     this.announceSeq = null;
     this.keepAlive = false;  // server runs the robot ("피킹 로봇 가동"): never end on silence
   }
-  echoOf(text) {
+  spokenRef() {
     const now = this.scope.performance?.now?.() ?? Date.now();
-    const ref = this.speech?.text || (this.lastSpoken && now < this.lastSpoken.until ? this.lastSpoken.text : null);
+    return this.speech?.text || (this.lastSpoken && now < this.lastSpoken.until ? this.lastSpoken.text : null);
+  }
+  echoOf(text) {
+    const ref = this.spokenRef();
     return ref !== null && isEcho(text, ref);
+  }
+  // A partial result that is still a piece of what is playing ("일시", "일시정지 명령") may be the
+  // speaker itself: do not cut the announcement for it (that also dropped the echo filter -> loop).
+  maybeEcho(text) {
+    const ref = this.spokenRef(), h = squash(text);
+    return ref !== null && h.length > 0 && squash(ref).includes(h);
   }
   follow(status) {
     // Server state: keep listening during a robot run, speak a new announcement once.
@@ -76,6 +85,8 @@ export class BrowserVoice {
     const speech = this.speech;
     if (!speech) return;
     this.speech = null;
+    // What was already played can still come back from the recogniser: keep filtering it.
+    this.lastSpoken = {text: speech.text, until: (this.scope.performance?.now?.() ?? Date.now()) + ECHO_TAIL_MS};
     this.scope.speechSynthesis?.cancel();
     this.update({...speech.status, state: 'listening'});
   }
@@ -111,13 +122,15 @@ export class BrowserVoice {
           if (result?.isFinal) again();
           return;
         }
-        if (this.speech && squash(text)) this.bargeIn();  // the user is talking: stop the announcement now
+        if (this.speech && squash(text) && !this.maybeEcho(text)) this.bargeIn();  // the user is talking: stop now
         if (!result?.isFinal || !squash(text)) return;
         handled = true; recognition.stop();
         try {
           const next = await this.api('transcript', {session: this.session, turn: this.turn, text});
           if (!live()) return;
-          this.turn = next.turn; this.update(next);
+          this.turn = next.turn;
+          if (next.echo) { listen(); return; }  // the server recognised its own reply: nothing to say
+          this.update(next);
           if (!next.can_stop) { this.active = false; clearInterval(this.pollTimer); return; }
           if (!this.follow(next)) this.speak(next.reply, next);  // a new announcement replaces the reply
           listen();  // keep listening while the reply plays

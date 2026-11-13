@@ -36,7 +36,7 @@ def test_voice_and_manual_commands_share_packing_processor(tmp_path):
         assert client.post('/api/packing/command',json={'action':'cmd-stop'}).status_code==200
         voice = client.post('/api/voice/wake').json()
         response = client.post('/api/voice/transcript',json=dict(session=voice['session'],turn=voice['turn'],text='피킹 재개해줘'))
-        assert response.status_code==200 and '재개할까요' in response.json()['reply']  # moves the robot: asked back
+        assert response.status_code==200 and '이어 갈까요' in response.json()['reply']  # moves the robot: asked back
         assert client.app.state.pipeline.packing.order(123)['paused'] is True
         response = client.post('/api/voice/transcript',json=dict(session=voice['session'],turn=voice['turn']+1,text='네'))
         assert response.status_code==200
