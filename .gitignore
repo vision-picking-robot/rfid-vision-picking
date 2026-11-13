@@ -13,3 +13,6 @@ dist/
 /validation/
 windows_rfid_bridge/api_url.txt
 .venv-win/
+
+# ultralytics/matplotlib cache created by product YOLO training
+web/.cache/
