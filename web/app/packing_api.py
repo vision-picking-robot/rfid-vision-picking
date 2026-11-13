@@ -106,6 +106,30 @@ def rfid_scan_and_log(body: RfidScanTrigger, request: Request):
     }
 
 
+@router.get("/stock/tag/{raw_uid}")
+def stock_by_tag(raw_uid: str, request: Request):
+    """Inventory lookup for a scanned label: stock left and warehouse location. Never queues a robot task."""
+    from robot_rfid.database import clean_uid
+    from .packing_catalog import TAG_SKUS
+
+    rfid_db = getattr(request.app.state, "database", None)
+    cleaned = clean_uid(raw_uid)
+    if len(cleaned) < 4 or len(cleaned) > 14:
+        raise DomainError("UID 형식이 아닙니다. 라벨을 다시 찍어 주세요.", 422)
+    try:
+        uid = rfid_db.resolve_uid(cleaned) if rfid_db else cleaned
+    except (KeyError, ValueError) as exc:
+        raise DomainError(f"등록되지 않은 태그입니다 ({cleaned})", 404) from exc
+    tag = rfid_db.product(uid) if rfid_db else None
+    sku = TAG_SKUS.get(uid)
+    packing = request.app.state.pipeline.packing
+    with packing.store.read_transaction():
+        product = next((p for p in packing.products() if p["sku"] == sku), None)
+    if tag is None or product is None:
+        raise DomainError(f"등록되지 않은 태그입니다 ({cleaned})", 404)
+    return {"uid": uid, "raw_uid": cleaned, "tag": tag, "product": product}
+
+
 @router.post("/command")
 def button_command(body: ButtonCommand, request: Request):
     # An explicit confirm click has the same authority as the existing receive-order button.

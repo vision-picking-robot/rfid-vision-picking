@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from unicodedata import normalize
 
 from .packing import ORDER_SKUS
+from .packing_catalog import PRESENTATION_SKUS
 
 PHRASES = {
     "query-stock": ("재고 파악해줘", "재고 알려줘", "재고도 알려줘", "재고 조회", "재고 조회해줘"),
@@ -63,8 +64,12 @@ def packing_answer(packing, intent, *, confirming=False):
     with packing.store.read_transaction():
         products = {product["sku"]: product for product in packing.products()}
         if intent == "query-stock":
-            quantities = [f"{p['name']} {p['available']}{p['unit']}" for p in products.values()]
-            return Answer(", ".join(quantities) + " 주문 가능합니다.")
+            # Read out the presentation items only; the warehouse catalog has 100 more lines.
+            main = [products[sku] for sku in PRESENTATION_SKUS if sku in products]
+            quantities = [f"{p['name']} {p['available']}{p['unit']}" for p in main]
+            others = len(products) - len(main)
+            return Answer(", ".join(quantities) + " 주문 가능합니다." +
+                          (f" 그 밖에 {others}개 품목은 재고 관리 화면에서 확인하세요." if others else ""))
         order = packing.order(123)
         received = any(o["number"] == 124 for o in packing.store.list("packing_order"))
         if intent == "cmd-order":

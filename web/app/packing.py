@@ -1,4 +1,5 @@
 """SQLite-backed inventory, class assignments and packing orders."""
+from .packing_catalog import CATALOG, REMOVED_PEOPLE, SAMPLE_ORDERS, SEED_BINS, TEAM
 from .store import DomainError, now, uid
 
 SEED_PRODUCTS = (
@@ -6,6 +7,7 @@ SEED_PRODUCTS = (
     ("PK-004", "물티슈", 1), ("PK-005", "인형", 2),
 )
 ORDER_SKUS = ("PK-001", "PK-002", "PK-004")
+MAIN_CUSTOMER = TEAM[0][0]
 
 
 class Packing:
@@ -14,7 +16,7 @@ class Packing:
         with store.write_transaction() as write:
             if not store.list("packing_order"):
                 for sku, name, stock in SEED_PRODUCTS:
-                    write("product", self.product(sku, name, "개", stock))
+                    write("product", self.product(sku, name, "개", stock, bin=SEED_BINS[sku]))
                 write("packing_order", self.new_order(123, "packing"))
                 self.log(write, "주문", "주문 #123 접수 · 쫀득초코칩, 복숭아녹차, 물티슈 각 1개 예약")
             db = self.store.db
@@ -22,13 +24,44 @@ class Packing:
             for sku, old, new in (("PK-001", "빼빼로", "쫀득초코칩"), ("PK-002", "생수", "복숭아녹차")):
                 db.execute("UPDATE products SET name=?, alias=CASE WHEN alias=? THEN ? ELSE alias END "
                            "WHERE sku=? AND name=?", (new, old, new, sku, old))
-            sample = db.execute("SELECT customer_id FROM orders JOIN customers ON customers.id=customer_id "
-                                "WHERE orders.public_id='packing-123' AND customers.name='홍길동'").fetchone()
-            if sample:
-                db.execute("INSERT OR IGNORE INTO customer_rfid VALUES (?, 'E2-34-08-A1')", (sample[0],))
-                second = db.execute("SELECT id FROM customers WHERE name='김서연' ORDER BY id LIMIT 1").fetchone()
-                second_id = second[0] if second else db.execute("INSERT INTO customers(name) VALUES ('김서연')").lastrowid
-                db.execute("INSERT OR IGNORE INTO customer_rfid VALUES (?, 'E2-34-08-B2')", (second_id,))
+            self._seed_demo(write)
+
+    def _seed_demo(self, write):
+        """Team members, warehouse catalog and past orders; also brings older stores up to date."""
+        db = self.store.db
+        # People: the old sample customer of order #123 becomes the first team member, the other one goes.
+        if not db.execute("SELECT 1 FROM customers WHERE name=?", (MAIN_CUSTOMER,)).fetchone():
+            db.execute("UPDATE customers SET name=? WHERE name=?", (MAIN_CUSTOMER, REMOVED_PEOPLE[0]))
+        for name in REMOVED_PEOPLE:
+            for (person,) in db.execute("SELECT id FROM customers WHERE name=?", (name,)).fetchall():
+                if not db.execute("SELECT 1 FROM orders WHERE customer_id=?", (person,)).fetchone():
+                    db.execute("DELETE FROM customer_rfid WHERE customer_id=?", (person,))
+                    db.execute("DELETE FROM customers WHERE id=?", (person,))
+        for name, number in TEAM:
+            row = db.execute("SELECT id FROM customers WHERE name=? ORDER BY id LIMIT 1", (name,)).fetchone()
+            person = row[0] if row else db.execute("INSERT INTO customers(name) VALUES (?)", (name,)).lastrowid
+            current = db.execute("SELECT uid FROM customer_rfid WHERE customer_id=?", (person,)).fetchone()
+            if (current is None or current[0] is None or current[0].startswith("E2-34-08")) and \
+                    not db.execute("SELECT 1 FROM customer_rfid WHERE uid=?", (number,)).fetchone():
+                db.execute("INSERT INTO customer_rfid(customer_id,uid) VALUES (?,?) ON CONFLICT(customer_id) "
+                           "DO UPDATE SET uid=excluded.uid", (person, number))
+        # Warehouse: locations for the seeded items, then the catalog (only what is missing).
+        for sku, location in SEED_BINS.items():
+            db.execute("UPDATE products SET bin=? WHERE sku=? AND bin=''", (location, sku))
+        known = {row[0] for row in db.execute("SELECT sku FROM products")}
+        added = [p for p in CATALOG if p["sku"] not in known]
+        for item in added:
+            write("product", self.product(item["sku"], item["name"], item["unit"], item["stock"],
+                                          item["alias"], item["bin"]))
+        # Past orders (#101-#122): finished or waiting, so they never reserve stock.
+        numbers = {row[0] for row in db.execute("SELECT number FROM orders")}
+        new_orders = [o for o in SAMPLE_ORDERS if o["number"] not in numbers]
+        for order in new_orders:
+            write("packing_order", {"id": f"packing-{order['number']}", "number": order["number"],
+                                    "customer": order["customer"], "paused": False, "state": order["state"],
+                                    "items": [dict(i) for i in order["items"]]})
+        if added or new_orders:
+            self.log(write, "재고", f"물류창고 품목 {len(added)}종 · 지난 주문 {len(new_orders)}건 불러오기")
 
     @staticmethod
     def product(sku, name, unit, stock, alias="", bin=""):
@@ -37,7 +70,7 @@ class Packing:
 
     @staticmethod
     def new_order(number, state):
-        return {"id": f"packing-{number}", "number": number, "customer": "홍길동", "paused": False,
+        return {"id": f"packing-{number}", "number": number, "customer": MAIN_CUSTOMER, "paused": False,
                 "state": state, "items": [{"id": f"{number}-{i}", "sku": sku, "done": False}
                                           for i, sku in enumerate(ORDER_SKUS, 1)]}
 

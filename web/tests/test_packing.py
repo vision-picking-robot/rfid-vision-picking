@@ -18,8 +18,8 @@ class PackingTests(unittest.TestCase):
     def test_simultaneous_retries_restart_and_reservations(self):
         with TestClient(self.app) as c:
             state = c.get("/api/packing").json()
-            self.assertEqual([p["stock"] for p in state["products"]], [10, 5, 3, 1, 2])
-            self.assertEqual([p["reserved"] for p in state["products"]], [1, 1, 0, 1, 0])
+            self.assertEqual([p["stock"] for p in state["products"][:5]], [10, 5, 3, 1, 2])
+            self.assertEqual([p["reserved"] for p in state["products"][:5]], [1, 1, 0, 1, 0])
             self.assertEqual(state["products"][3]["available"], 0)
             items = state["orders"][0]["items"]
             paths = [f"/api/packing/orders/123/items/{i['id']}/complete" for i in items]
@@ -39,8 +39,8 @@ class PackingTests(unittest.TestCase):
         with TestClient(create_app(self.settings, state_root=self.temp.name)) as c:
             self.assertEqual(c.put(paths[-1]).status_code, 200)
             state = c.get("/api/packing").json()
-            self.assertEqual([p["stock"] for p in state["products"]], [9, 4, 3, 0, 2])
-            self.assertEqual([p["reserved"] for p in state["products"]], [0] * 5)
+            self.assertEqual([p["stock"] for p in state["products"][:5]], [9, 4, 3, 0, 2])
+            self.assertEqual(sum(p["reserved"] for p in state["products"]), 0)
             self.assertEqual(state["orders"][0]["state"], "awaiting_dispatch")
             self.assertEqual(len([e for e in state["events"] if e["source"] == "패킹" and "출고" in e["message"]]), 3)
 
@@ -107,7 +107,7 @@ class PackingTests(unittest.TestCase):
             self.assertEqual(c.get("/api/packing/products").json()[-1]["available"], 4)
             self.assertEqual(c.put("/api/packing/orders/124").json()["state"], "received")
             self.assertEqual(c.put("/api/packing/orders/124").status_code, 200)
-            self.assertEqual(len(c.get("/api/packing").json()["orders"]), 2)
+            self.assertEqual(sum(o["number"] == 124 for o in c.get("/api/packing").json()["orders"]), 1)
             # Verify manual button commands (including cmd-pick) and RFID scan endpoint
             for action, expected in [
                 ("cmd-stop", "정지"),
