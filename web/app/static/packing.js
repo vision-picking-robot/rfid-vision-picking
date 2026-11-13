@@ -352,7 +352,7 @@ const voiceCommands = {
   "cmd-pick": "집어 (상품 피킹)",
   "query-stock": "재고 파악해줘",
   "query-order": "주문 내역 알려줘",
-  "cmd-order": "쫀득초코칩·생수·물티슈 하나씩 주문해줘"
+  "cmd-order": "쫀득초코칩·복숭아녹차·물티슈 하나씩 주문해줘"
 };
 
 const rfidPresetTags = [

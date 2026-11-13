@@ -27,7 +27,7 @@ class VoiceCommandsTests(unittest.TestCase):
         self.packing = Packing(self.store)
 
     def test_queries_mutations_and_exact_phrases(self):
-        self.assertIn("생수 4개", packing_answer(self.packing, "query-stock").text)
+        self.assertIn("복숭아녹차 4개", packing_answer(self.packing, "query-stock").text)
         self.assertIn("123번", packing_answer(self.packing, "query-order").text)
         for phrase, paused in [("멈춰!", True), ("피킹 재개해 줘.", False)]:
             packing_answer(self.packing, INTENTS[normalized(phrase)])

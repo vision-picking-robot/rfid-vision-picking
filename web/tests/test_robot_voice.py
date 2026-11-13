@@ -57,7 +57,7 @@ def test_dashboard_voice_drives_the_robot_paths(tmp_path):
         say('네')
         assert not client.get('/api/v1/mobile/status').json()['emergency_stopped']
         # the packing demo still answers its own phrases; unknown speech gets the help text
-        assert '생수' in say('재고 알려줘')
+        assert '복숭아녹차' in say('재고 알려줘')
         assert '물티슈 집어줘' in say('오늘 날씨 어때')
         assert '현재 작업은' in say('지금 상태')
 

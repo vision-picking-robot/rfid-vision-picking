@@ -13,7 +13,7 @@ def test_browser_transcript_reuses_packing_and_rejects_duplicate(tmp_path):
             assert 'session' not in client.get('/api/voice/status').json()
             def send(text, turn):
                 return client.post('/api/voice/transcript', json=dict(session=wake['session'], turn=turn, text=text))
-            assert '생수' in send('재고 알려줘', 1).json()['reply']
+            assert '복숭아녹차' in send('재고 알려줘', 1).json()['reply']
             assert send('멈춰', 1).status_code == 409
             assert not client.app.state.voice.packing.order(123)['paused']
             assert send('멈춰', 2).status_code == 200
