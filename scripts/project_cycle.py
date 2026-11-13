@@ -1098,6 +1098,17 @@ def wait_remote_trigger(runner, remote, log, triggers, timeout=0.0):
         time.sleep(0.2)
 
 
+def box_check(api, step, log, label=None):
+    """Packing-box webcam (web/app/box_check.py): 'reference' at home before the pick, 'verify' after placing.
+
+    Best effort: a missing webcam or reference is logged and never stops the robot."""
+    try:
+        return api.post(f'/api/box-check/{step}', json={'label': label}, timeout=10).raise_for_status().json()
+    except Exception as error:  # noqa: BLE001
+        log('box_check_unavailable', step=step, message=str(error))
+        return None
+
+
 def run_remote_task(runner, args, log, cycle):
     """Execute the next task another PC queued through POST /api/v1/scan-event (UID -> DB match on the web)."""
     import httpx
@@ -1137,6 +1148,10 @@ def run_remote_task(runner, args, log, cycle):
         name=task.get('product_name'), box=task.get('target_box_id'), quantity=task['quantity'])
     patch = lambda done, status, error=None: api.patch(  # noqa: E731
         f'/api/v1/tasks/{tid}', json=dict(completed=done, status=status, error=error)).raise_for_status()
+    name = task.get('product_name') or task.get('yolo_class_name')
+    box_failures = []
+    # The arm is at home (out of the box webcam's view): picture of the box before this task's items go in.
+    checking = getattr(args, 'box_check', False) and box_check(api, 'reference', log, f'{name} 작업 전') is not None
     try:
         patch(completed, 'PICKING')
         while completed < task['quantity']:
@@ -1146,11 +1161,23 @@ def run_remote_task(runner, args, log, cycle):
             runner.retract()
             runner.place(task.get('target_box_id'))
             completed += 1
+            if checking:
+                runner.home()  # move the arm out of the box webcam's view before the picture
+                result = box_check(api, 'verify', log, f"{name} {completed}/{task['quantity']}")
+                if result is not None:
+                    log('box_check', task_id=tid, item=completed, verdict=result['verdict'], change=result['change'])
+                    if not result['ok']:  # record only: the cycle carries on
+                        box_failures.append(f"{completed}번째 {result['text']}")
+                        if remote is not None:
+                            remote.report('PICKING', f"상자 투입 확인 실패 · {result['text']} (기록 후 계속 진행)")
             patch(completed, 'PICKING')
-        patch(completed, 'COMPLETED')
+        if box_failures:
+            patch(completed, 'DEFECTIVE', '상자 투입 확인 실패: ' + ', '.join(box_failures))
+        else:
+            patch(completed, 'COMPLETED')
         runner.home()
         log('cycle_ok', cycle=cycle, scenario='remote_rfid', task_id=tid, product=target['product'],
-            box_slot=runner.last_slot, holding=runner.holding)
+            box_slot=runner.last_slot, holding=runner.holding, box_check=box_failures or ('ok' if checking else 'off'))
     except Exception as error:
         try:
             runner.stop()
@@ -1199,6 +1226,9 @@ def main(argv=None):
                              'stop, alert phone/web/control program and wait for [정지 해제] (0 = old behaviour)')
     parser.add_argument('--remote-rfid', action='store_true',
                         help='with --api: wait for tasks queued by another PC (POST /api/v1/scan-event) instead of scanning')
+    parser.add_argument('--box-check', action='store_true',
+                        help='remote mode: confirm each placed item landed in the box with the packing-box webcam '
+                             '(web /api/box-check); a failed check marks the task DEFECTIVE but does not stop')
     parser.add_argument('--wait-timeout', type=float, default=0, help='remote mode: seconds to wait per task, 0 = forever')
     parser.add_argument('--api', help='run the repo RFID Orchestrator against this web API, e.g. http://127.0.0.1:8000')
     parser.add_argument('--remote-trigger', action='store_true',

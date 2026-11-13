@@ -99,16 +99,28 @@ def test_remote_ui_uses_native_bridge_and_draws_area():
 
 # ---- End to end: real HTTP server + mock robot cycle driven by phone buttons ----
 
+LIVE = {}  # the running web app of the live_api fixture
+
+
 @pytest.fixture
-def live_api(tmp_path, monkeypatch):
+def live_api(tmp_path, monkeypatch, request):
     monkeypatch.delenv('PICKING_CONFIG', raising=False)
     # The cycle runs in a worker thread here; Ctrl+C handlers can only be installed on the main thread.
     monkeypatch.setattr(cycle.signal, 'signal', lambda *args: None)
     with socket.socket() as s:
         s.bind(('127.0.0.1', 0))
         port = s.getsockname()[1]
-    server = uvicorn.Server(uvicorn.Config(create_app(tmp_path / 'rfid.db'), host='127.0.0.1', port=port,
-                                           log_level='warning'))
+    app = create_app(tmp_path / 'rfid.db')
+    app.state.box_checks = []
+    if getattr(request, 'param', None) == 'box_check':  # stand-in for the web's packing-box webcam
+        @app.post('/api/box-check/{step}')
+        def fake_box_check(step: str, body: dict):
+            app.state.box_checks.append((step, body.get('label')))
+            if step == 'reference':
+                return {'reference': 'now'}
+            return {'ok': False, 'verdict': 'missing', 'text': '상자 안에서 물품을 찾지 못함', 'change': 0.002}
+    LIVE['app'] = app
+    server = uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', port=port, log_level='warning'))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
     url = f'http://127.0.0.1:{port}'
@@ -371,3 +383,27 @@ def test_remote_rfid_cycle_holds_on_estop_and_carries_on_after_reset(live_api, t
     assert box['rc'] == 0 and any(e['event'] == 'cycle_ok' for e in evs)
     names = [e.get('name') for e in evs]
     assert names.index('home_return') < names.index('approach')
+
+
+@pytest.mark.parametrize('live_api', ['box_check'], indirect=True)
+def test_box_check_failure_is_recorded_and_the_cycle_carries_on(live_api, tmp_path):
+    log = tmp_path / 'box.jsonl'
+    t, box = run_cycle(['--api', live_api, '--remote-rfid', '--cycles', '1', '--wait-timeout', '30',
+                        '--box-check', '--log', str(log)])
+    wait_for(lambda: any(e['event'] == 'waiting_for_tag' for e in events(log)))
+    httpx.post(live_api + '/api/v1/scan-event', json={'uid': '0B71E65D'}).raise_for_status()
+    t.join(30)
+    evs = events(log)
+    assert box['rc'] == 0, 'a failed box check is recorded, not a stop'
+    checks = LIVE['app'].state.box_checks
+    assert [step for step, _ in checks] == ['reference', 'verify']
+    names = [e.get('name') for e in evs]
+    place = max(i for i, n in enumerate(names) if n == 'box_retreat')
+    home_after = names.index('home_return', place)
+    verify_at = next(i for i, e in enumerate(evs) if e['event'] == 'box_check')
+    assert home_after < verify_at, 'the arm leaves the box camera view before the check'
+    ok = next(e for e in evs if e['event'] == 'cycle_ok')
+    assert ok['box_check'] == ['1번째 상자 안에서 물품을 찾지 못함']
+    with LIVE['app'].state.database.connect() as db:
+        task = db.execute('SELECT status, error FROM tasks ORDER BY rowid DESC LIMIT 1').fetchone()
+    assert task['status'] == 'DEFECTIVE' and '상자 투입 확인 실패' in task['error']

@@ -129,35 +129,34 @@
           <div><span>탐지 객체</span><strong><b data-camera="count">—</b> <em>개</em></strong></div>
         </div>
       </section>
-      <section class="panel safety-panel" id="safety-camera" aria-label="작업 영역 안전 감시">
-        <div class="panel-head"><h2 class="camera-heading"><svg class="station-icon" aria-hidden="true"><use href="/static/station-icons.svg#monitor"></use></svg>작업 영역 안전 감시</h2>
-          <span class="safety-badge" data-safety="badge" role="status">감시 대기</span></div>
-        <figure class="camera safety-view" data-safety="view">
-          <img data-safety="image" alt="작업대를 비추는 안전 감시 웹캠 영상" hidden>
-          <svg class="safety-overlay" data-safety="overlay" viewBox="0 0 1000 750" preserveAspectRatio="none" aria-hidden="true"></svg>
-          <div class="camera-empty" data-safety="empty"><p data-safety="message">웹캠 연결 대기</p></div>
-          <p class="safety-banner" data-safety="banner" role="alert" hidden></p>
+      <section class="panel safety-panel box-check-panel" id="box-check" aria-label="상자 투입 확인 카메라">
+        <div class="panel-head"><h2 class="camera-heading"><svg class="station-icon" aria-hidden="true"><use href="/static/station-icons.svg#monitor"></use></svg>상자 투입 확인</h2>
+          <span class="safety-badge" data-box="badge" role="status">확인 대기</span></div>
+        <figure class="camera safety-view" data-box="view">
+          <img data-box="image" alt="포장 상자 안을 비추는 웹캠 영상" hidden>
+          <svg class="safety-overlay" data-box="overlay" viewBox="0 0 1000 750" preserveAspectRatio="none" aria-hidden="true"></svg>
+          <div class="camera-empty" data-box="empty"><p data-box="message">웹캠 연결 대기</p></div>
+          <p class="safety-banner" data-box="banner" role="alert" hidden></p>
         </figure>
         <dl class="safety-facts">
-          <div><dt>감시 구간</dt><dd data-safety="phase">대기</dd></div>
-          <div><dt>단계</dt><dd data-safety="stage">정상</dd></div>
-          <div><dt>작업자</dt><dd data-safety="people">—</dd></div>
-          <div><dt>카메라</dt><dd data-safety="camera">—</dd></div>
+          <div><dt>최근 판정</dt><dd data-box="verdict">—</dd></div>
+          <div><dt>상자 안 변화</dt><dd data-box="change">—</dd></div>
+          <div><dt>기준 사진</dt><dd data-box="reference">없음</dd></div>
+          <div><dt>카메라</dt><dd data-box="camera">—</dd></div>
         </dl>
         <div class="safety-controls">
-          <button type="button" data-safety-action="sound" aria-pressed="false">경고음·음성 켜기</button>
-          <label class="safety-camera-select">웹캠 <select data-safety="cameraSelect"><option value="">불러오는 중</option></select></label>
-          <button type="button" data-safety-action="zones" aria-pressed="false">구역 설정</button>
-          <button type="button" data-safety-action="simulate" aria-pressed="false">가상 작업자 진입</button>
+          <label class="safety-camera-select">웹캠 <select data-box="cameraSelect"><option value="">불러오는 중</option></select></label>
+          <button type="button" data-box-action="area" aria-pressed="false">상자 영역 설정</button>
+          <button type="button" data-box-action="reference">기준 사진 찍기</button>
+          <button type="button" data-box-action="verify">지금 확인</button>
+          <button type="button" data-box-action="view" aria-pressed="false">마지막 판정 사진</button>
+          <p class="meta">수동 시험: 빈 상자에서 기준 사진 → 물건 넣기 → 지금 확인. 작업 중에는 로봇이 자동으로 찍습니다.</p>
         </div>
-        <div class="safety-zone-edit" data-safety="zoneEdit" hidden>
-          <span>구역</span>
-          <button type="button" data-safety-zone="1" aria-pressed="true">1</button><button type="button" data-safety-zone="2" aria-pressed="false">2</button>
-          <button type="button" data-safety-zone="3" aria-pressed="false">3</button><button type="button" data-safety-zone="4" aria-pressed="false">4</button>
-          <p class="meta" data-safety="zoneHint">영상에서 구역의 꼭짓점 4곳을 차례로 누르세요</p>
-          <button type="button" data-safety-action="zones-reset" class="link">기본값</button>
+        <div class="safety-zone-edit" data-box="areaEdit" hidden>
+          <p class="meta" data-box="areaHint">영상에서 상자 안쪽 영역의 꼭짓점 4곳을 차례로 누르세요</p>
+          <button type="button" data-box-action="area-reset" class="link">기본값</button>
         </div>
-        <ol class="activity safety-events" data-safety="events" aria-label="안전 감시 기록"></ol>
+        <ol class="activity safety-events" data-box="events" aria-label="상자 투입 확인 기록"></ol>
       </section>
     </div>
     <div class="duo">

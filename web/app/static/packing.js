@@ -1,7 +1,7 @@
 import { currentDestination, icon } from "./station-nav.js";
 import { demo, record } from "./packing-demo.js";
 import { connectDashboardCamera } from "./dashboard-camera.js";
-import { connectSafetyPanel } from "./safety-panel.js";
+import { connectBoxCheckPanel } from "./box-check-panel.js";
 import { BrowserVoice } from "./browser-voice.js";
 import { ClapWake } from "./clap-wake.js";
 
@@ -187,7 +187,7 @@ function renderDashboard() {
   }
   // Keep the camera mounted across inventory and order updates.
   stopCamera ??= connectDashboardCamera(document.getElementById("live-camera"), () => station);
-  stopSafety ??= connectSafetyPanel(document.getElementById("safety-camera"));
+  stopSafety ??= connectBoxCheckPanel(document.getElementById("box-check"));
   if (!station) {
     document.getElementById("dashboard-order").textContent = "주문 조회 대기 중";
     return;
