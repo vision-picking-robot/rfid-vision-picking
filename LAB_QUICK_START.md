@@ -1,6 +1,6 @@
 # 19:00 실습실 빠른 시작 (Codex + Antigravity + RFID + Camera 통합본)
 
-main 갱신 → MOCK → 그리퍼 단독 시험 → 실물 연결의 최종 순서는 [루트 README](README.md)와 [Ubuntu 현장 인수인계](docs/04-runbook-and-validation.md)를 따른다.
+main 갱신 → MOCK → 그리퍼 단독 시험 → 실물 연결의 최종 순서는 [상세 설치·실행 절차](docs/SETUP.md)와 [Ubuntu 현장 인수인계](docs/04-runbook-and-validation.md)를 따른다.
 Ubuntu 24.04 / ROS 2 Jazzy / Python 3.12 및 Windows 10/11 호환 기준이다.
 
 ## 1. 노트북 유선 LAN 및 하드웨어 연결 확인

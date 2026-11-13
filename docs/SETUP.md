@@ -1,0 +1,390 @@
+# 상세 설치·실행 절차 (E0509 + RH-P12-RN(A))
+
+**main 실습실 실행 기준:** Ubuntu 24.04 / ROS 2 Jazzy / Python 3.12 (2026-11-10 검증).
+기본값은 MOCK이며 로봇에 연결하지 않는다. 실물 보정·TCP·상품별 파지값 검증은 남아 있다.
+이 저장소만 clone하면 제어기, 웹/음성 소스, 설정, 분석 문서가 함께 내려온다.
+
+> **실습실 다음 작업:** [docs/LAB_HANDOFF.md](LAB_HANDOFF.md) — 최근 추가 기능(관제 프로그램, 웹캠 안전 감시,
+> 파지 재시도, 음성 매뉴얼)과 `git pull` 후 확인할 순서·남은 결정이 정리되어 있다.
+
+## 최종 실행 절차: main 갱신부터 실물 연결까지
+
+**전제:** Ubuntu 24.04 / ROS 2 Jazzy / Python 3.12를 사용하며, 장비와 호환되는 두산 드라이버가
+`~/ros2_ws`에 빌드되어 있어야 한다. 패키지 조회·빌드·상태 확인이 실패하면 해당 단계에서 해결한 뒤 진행한다.
+저장소 경로가 다르면 `~/vision_lab/robotArm_Controller_demo`를 실제 경로로 바꾼다.
+
+| 용도 | 주소·포트 |
+|---|---|
+| 두산 제어기 | 펜던트에서 확인한 실제 IP `110.120.1.56`~`110.120.1.63` 중 하나, DRFL **12345** |
+| 노트북 제어 API | `http://127.0.0.1:8011/docs` |
+| 웹 대시보드 | `http://127.0.0.1:8000` |
+| ROS 네임스페이스 | `dsr01` |
+| 그리퍼 통신 | 두산 Tool Flange RS-485, port 1, ID 1, 57600/8N1 |
+
+8011은 두산 DRFL 포트가 아니다. IP 후보를 자동 스캔하거나 PC COM3 직결로 가정하지 않는다.
+실제 로봇·그리퍼 동작은 아래에 표시한 실물 단계에서만 수행한다.
+
+### 1. main 갱신 및 Python 환경 준비 — 터미널 A
+
+기존 서버는 해당 터미널에서 `Ctrl+C`로 종료한다. 처음 사용하는 노트북이라면 다음 명령으로 clone한다.
+
+```bash
+sudo apt update
+sudo apt install -y git python3.12-venv
+mkdir -p ~/vision_lab
+cd ~/vision_lab
+git clone https://github.com/vision-picking-robot/rfid-vision-picking.git robotArm_Controller_demo
+```
+
+이미 clone한 노트북은 위 clone 명령을 생략하고 다음부터 실행한다.
+
+```bash
+cd ~/vision_lab/robotArm_Controller_demo
+git switch main
+git pull --ff-only origin main
+git log -1 --oneline
+
+source /opt/ros/jazzy/setup.bash
+echo "$ROS_DISTRO"
+[ -d .venv ] || python3.12 -m venv --system-site-packages .venv
+source .venv/bin/activate
+python --version
+python -m pip install -r requirements.txt
+```
+
+`jazzy`, `Python 3.12.x`를 확인한다. 현장 전용 `config/hardware.local.json`은 Git 제외 대상이므로
+노트북에서 별도로 보관·입력한다. 모델 가중치와 GPU 추론 환경은 저장소에 포함하지 않는다.
+
+### 2. 로봇 없이 MOCK 확인 — 터미널 A
+
+```bash
+unset PICKING_CONFIG
+export MOCK_MODE=true
+
+python mock_demo.py
+python scripts/test_gripper.py --mode mock --action status
+python scripts/test_gripper.py --mode mock --action open
+python scripts/test_gripper.py --mode mock --action close
+python -m pytest tests robot_rfid -q
+```
+
+MOCK 피킹의 `state: completed`, 그리퍼의 `mock_mode: true`, 테스트의 `45 passed`를 확인한다.
+이 단계는 실제 장비를 움직이지 않는다.
+
+웹까지 확인하려면 다음 런처를 실행한다.
+
+```bash
+python scripts/start_lab.py
+```
+
+대시보드 `http://127.0.0.1:8000`, API `http://127.0.0.1:8011/docs`를 연다.
+런처는 MOCK와 공유 RFID DB를 사용한다. 확인 후 **터미널 A에서 `Ctrl+C`로 종료**하고 다음 단계로 간다.
+음성은 Chrome/Edge의 localhost/HTTPS에서 기존 **음성 명령→대화 시작**과 브라우저 권한 허용으로 확인한다.
+
+### 3. 두산 드라이버 확인 및 그리퍼 빌드 — 터미널 A
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/ros2_ws/install/setup.bash
+
+ros2 pkg prefix dsr_bringup2
+ros2 pkg prefix dsr_common2
+ros2 pkg prefix dsr_hardware2
+```
+
+패키지 경로가 나오지 않으면 먼저 두산 Jazzy 드라이버를 준비한다. 기존 Humble/GL010117 바이너리를
+새 Jazzy 플러그인과 검증 없이 혼합하지 않는다. 정상 조회 후 이번 저장소의 플러그인을 빌드한다.
+
+```bash
+cd ~/ros2_ws
+colcon build   --base-paths ~/vision_lab/robotArm_Controller_demo/ros   --packages-select warehouse_gripper
+source install/setup.bash
+ros2 pkg prefix warehouse_gripper
+```
+
+같은 `warehouse_gripper` 소스를 중복 등록하지 않는다. 위 `--base-paths`는 이번 저장소의 복사본을 지정한다.
+
+### 4. 실물 두산 제어기에 연결 — 터미널 A
+
+DART 작업과 다른 로봇 제어 프로그램을 종료한다. 아래 IP는 실제 장비 주소로 변경한다.
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/ros2_ws/install/setup.bash
+
+# 펜던트의 실제 주소가 .63이면 이 값을 변경
+export ROBOT_IP=110.120.1.56
+ping -c 3 "$ROBOT_IP"
+
+ros2 launch dsr_bringup2 dsr_bringup2_rviz.launch.py   name:=dsr01   mode:=real   host:="$ROBOT_IP"   port:=12345   model:=e0509
+```
+
+**터미널 A는 실행 상태로 유지한다.** `hardware.local.json`의 robot_ip 메타데이터를 바꾸는 것만으로
+이미 실행 중인 ROS 드라이버의 연결 대상이 바뀌지는 않는다.
+
+### 5. 로봇 상태 확인 및 그리퍼 로드 — 새 터미널 B
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/ros2_ws/install/setup.bash
+
+ros2 service call   /dsr01/system/get_robot_system   dsr_msgs2/srv/GetRobotSystem '{}'
+ros2 service call   /dsr01/system/get_robot_mode   dsr_msgs2/srv/GetRobotMode '{}'
+ros2 service call   /dsr01/system/get_robot_state   dsr_msgs2/srv/GetRobotState '{}'
+```
+
+각 응답의 `success: true`와 다음 값을 확인한다.
+
+| 필드 | 필요한 값 |
+|---|---|
+| robot_system | `0` — REAL |
+| robot_mode | `1` — AUTO |
+| robot_state | `1` — STANDBY |
+
+```bash
+ros2 launch warehouse_gripper gripper.launch.py
+```
+
+**터미널 B도 실행 상태로 유지한다.** 플러그인은 기본 `enable_motion:false`다.
+
+### 6. 그리퍼 실물 단독 시험 — 새 터미널 C
+
+먼저 상태만 조회한다.
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/ros2_ws/install/setup.bash
+cd ~/vision_lab/robotArm_Controller_demo
+source .venv/bin/activate
+
+ros2 control list_controllers   -c /dsr01/controller_manager
+python scripts/test_gripper.py   --mode real --namespace dsr01 --action status
+```
+
+`warehouse_gripper`가 `active`이고 실제 위치·전류·moving이 읽히는지 확인한다.
+
+**아래부터 실제 손가락이 움직인다.** 주변을 비우고 상태가 정상일 때 한 줄씩 실행한다.
+팔 이동 명령은 아래에 없다.
+
+```bash
+ros2 param set   /dsr01/warehouse_gripper enable_motion true
+python scripts/test_gripper.py   --mode real --namespace dsr01 --action open
+python scripts/test_gripper.py   --mode real --namespace dsr01 --action status
+python scripts/test_gripper.py   --mode real --namespace dsr01 --action close
+python scripts/test_gripper.py   --mode real --namespace dsr01 --action status
+
+# 단독 시험 종료: 이후 신규 구동 명령 차단
+ros2 param set   /dsr01/warehouse_gripper enable_motion false
+```
+
+`command_acknowledged:true`는 명령 응답 확인이며 완전 닫힘·물체 파지 성공이 아니다.
+`grasp_verified:false`와 실제 위치·전류를 구분해 확인한다. 오류·타임아웃이면 반복 명령 대신
+현물과 상태부터 확인한다. enable_motion=false는 토크 해제나 긴급 정지를 뜻하지 않는다.
+
+### 6-1. 팔·그리퍼 무한 내구 시험 (선택) — 터미널 C
+
+교시된 `home`↔`via_point` 관절 자세 왕복과 그리퍼 열기→닫기→열기를 반복한다.
+모든 이동은 SafeMover(fkin 바닥 검사·속도 상한)를 거치고, 매 사이클 REAL/AUTO/STANDBY를 재확인하며,
+도착 관절 오차(1°)를 검사한다. 오류나 `Ctrl+C`이면 `move_stop`을 보내고 종료하며 자동 재시도하지 않는다.
+로그는 `state/endurance/*.jsonl`에 남는다.
+실물 그리퍼는 PC 플러그인이 아니라 **컨트롤러 DRL**(`vision_picking/drl_gripper.py`, `drl_start`)로 구동한다.
+컨트롤러 DRCF v2.10(GF02100300)이 PC DRFL(GL013304)의 포트 지정 `flange_serial_*` 호출에 응답하지 않기 때문이다.
+단독 확인: `python -m vision_picking.drl_gripper --action status|open|close` **비상정지가 아니므로 펜던트 E-Stop을 손 닿는 곳에 둔다.**
+
+```bash
+python scripts/endurance_test.py --cycles 20                 # MOCK
+python scripts/endurance_test.py --mode real --confirm-real  # 실물, Ctrl+C까지 반복 (기본 10 deg/s)
+```
+
+### 6-2. 교시 좌표 기반 전체 프로젝트 사이클 (카메라 없음)
+
+`scripts/project_cycle.py`는 RFID 시나리오 순서로 home → 라벨 스캔(z 50) → RFID 태그 → 그리퍼 열기 →
+상품 교시 위치 접근·하강(바닥+파지 높이) → 파지 → 들기 → 경유점 → 박스 슬롯 1 놓기 → 놓기 → 복귀를 실행한다.
+
+- **TCP 주의:** 현재 컨트롤러에 TCP가 비어 있으면 좌표가 플랜지 기준이다. 교시 posx는 손끝 기준이며
+  fkin(home.posj)과 비교하면 z가 120 mm 차이 난다. 스크립트는 시작 시 이 차이를 측정해 직선 이동 목표를
+  플랜지로 변환하고, 바닥 하한 검사는 손끝 z로 수행한다. 펜던트에서 TCP를 켜면 차이가 0이 되어 보정도 0이 된다.
+  `vision_picking/controller.py`의 기존 피킹 경로는 이 보정이 없으므로 **TCP를 켜지 않고 실물 실행하면 120 mm 낮게 내려간다.**
+- 시작 시 손끝이 home 높이보다 낮으면 수직으로 먼저 상승한 뒤 관절 이동한다.
+- 파지 후 들기·이동 높이는 `--lift-extra`(기본 100 mm: 들기 370, 이동 385), 박스 놓기 높이는 `--place-extra`
+  (기본 100 mm: 슬롯 z 85 → 185)로 높인다. 높인 home/경유점/박스 상부 관절값은 시작 시 ikin(같은 해 공간)으로 계산하고 fkin으로 검증한다.
+- **네트워크:** USB 랜 어댑터(r8152)를 USB 허브에 연결하면 `Tx status -71`로 리셋되어 DRFL 연결이 끊기고 SAFE_OFF가 된다.
+  노트북 포트에 직접 연결한다.
+
+```bash
+python scripts/project_cycle.py --cycles 1                                # MOCK
+python scripts/project_cycle.py --mode real --confirm-real --cycles 1     # 실물 1회
+```
+
+웹 대시보드와 연동하려면 `python scripts/start_lab.py`를 띄운 뒤 `--api http://127.0.0.1:8000`을 붙인다.
+저장소의 `robot_rfid.orchestrator.Orchestrator`가 스캔 이벤트 등록 → PICKING → COMPLETED를 웹 작업 큐에 반영한다.
+
+**실물 검증 (2026-11-10 22:01–22:04, 3분 8초):** 복구 상승 → home → 라벨 스캔(z 50) → 태그 0B71E55D →
+그리퍼 열기 → 접근·하강(z 120) → 파지(빈 닫힘 738) → 들기 → 경유점 → 박스 슬롯 1(z 85) 놓기 → 열기 → 복귀,
+웹 작업 `COMPLETED`. 상품을 놓지 않은 빈 파지 시험이며 RFID 리더 미연결로 프리셋 태그를 사용했다.
+
+**원격 RFID (리더기는 다른 Windows PC):** Windows 쪽은 [windows_rfid_bridge/README.md](../windows_rfid_bridge/README.md)대로 클론 후 `windows_rfid_bridge\run_bridge.bat` 하나만 실행한다.
+리더기가 키보드처럼 입력한 UID를 브리지가 로봇 PC로 보내면 웹이 DB와 매칭해 작업을 등록하고,
+우분투는 `python scripts/start_lab.py --host 0.0.0.0`(같은 LAN에 대시보드 공개, 인증 없음 — 신뢰할 수 있는 망에서만) 후
+`python scripts/project_cycle.py --mode real --confirm-real --cycles 0 --api http://127.0.0.1:8000 --remote-rfid`로 작업을 기다려 실행한다.
+
+드라이버가 `AUTHORITY : MONITORING_ACCESS_CONTROL_DENY`로 초기화에 실패하면(RViz link_1~6 No transform)
+드라이버가 두 개 떠 있지 않은지 확인하고, 펜던트 알람 해제·제어권 승인 또는 컨트롤러 전원 재시작 후 다시 띄운다.
+
+### 7. 실측값 입력 후 실물 통합 API 실행 — 터미널 C
+
+```bash
+cd ~/vision_lab/robotArm_Controller_demo
+# 최초 한 번만 복사: 기존 현장 파일을 덮어쓰지 않음
+cp -n config/hardware.example.json config/hardware.local.json
+nano config/hardware.local.json
+```
+
+| 실측·교시 항목 | 적용 위치 |
+|---|---|
+| 카메라 장치·세션·해상도, 4점 pixel↔BASE, 보정 버전 | `hardware.local.json:calibration.camera/corners/revision` |
+| 클래스 라벨→상품 | 같은 파일의 `class_map` |
+| 상품별 파지 위치 범위·최소 전류 | `grasp_feedback.<상품>.min_position_pulses/max_position_pulses/min_current/calibrated` |
+| 작업 공간·ROS namespace | `workspace_mm`, `namespace` |
+| 바닥·홈·접근·경유·박스 좌표 | `config/poses.yaml` |
+| 상품별 바닥 기준 집기 높이 | `config/products.yaml` |
+| 실제 공구 TCP 이름·오프셋·Tool | **두산 펜던트/드라이버 설정** |
+
+TCP와 상품 파지 피드백은 별개다. 기본 MOCK 보정값을 실물에 사용하지 않는다.
+수평 작업면만 지원하며, 슬롯 2–4는 미교시다. 현재 바닥 표본은 1개이므로 현장에서 4점 이상 재측정한다.
+실측·검증을 끝낸 항목만 다음 표시를 true로 설정한다.
+
+```text
+calibration_verified
+tcp_verified
+waypoints_verified
+gripper_verified
+workspace_verified
+grasp_feedback.<상품>.calibrated
+```
+
+기존 웹의 보정값을 읽기 전용으로 가져오려면 아래 명령을 사용할 수 있다.
+결과 `config/imported.mock.json`은 여전히 MOCK이며 카메라 세션 변경 시 재동기화한다.
+
+```bash
+python import_web_calibration.py --web http://127.0.0.1:8000 --region legacy
+```
+
+모든 현장 확인을 마친 후 별도 실물 API를 실행한다. MOCK 런처는 이미 종료되어 있어야 한다.
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/ros2_ws/install/setup.bash
+cd ~/vision_lab/robotArm_Controller_demo
+source .venv/bin/activate
+
+export PICKING_CONFIG="$PWD/config/hardware.local.json"
+export MOCK_MODE=false
+python scripts/start_controller.py
+```
+
+다른 터미널에서 확인한다.
+
+```bash
+curl http://127.0.0.1:8011/healthz
+```
+
+`mock_mode:false`는 서버 모드 확인이다. 실제 로봇 연결 상태는 4–6단계 조회로 확인한다.
+서버 기동만으로 팔이나 피킹이 시작되지 않는다. 자동 피킹에는 유효한 탐지 프레임·보정·파지 설정과
+플러그인 구동 허용이 필요하다. 6단계 종료 때 차단한 enable_motion은 실제 작업 직전 준비를 확인한 뒤
+다시 true로 설정해야 한다. 실물 동작을 위해 MOCK 전용 start_lab.py를 사용하지 않는다.
+
+작업 종료 시 동작 완료를 확인하고 신규 그리퍼 명령을 차단한 뒤 각 서버 터미널을 `Ctrl+C`로 종료한다.
+
+```bash
+ros2 param set /dsr01/warehouse_gripper enable_motion false
+```
+
+## 보존된 웹 화면·한국어 음성
+
+새 터미널에서 저장소 루트의 venv를 활성화한 뒤:
+
+```bash
+export YOLO_VOICE_ENABLED=1
+export YOLO_CAMERA_AUTOSTART=0
+export YOLO_DEMO_CONTROLLER_URL=http://127.0.0.1:8011
+python -m uvicorn app.main:app --app-dir web --host 127.0.0.1 --port 8000
+```
+
+Windows PowerShell은 `export KEY=value` 대신 `$env:KEY='value'`를 사용한다.
+[대시보드](http://127.0.0.1:8000)에서 기존 **음성 명령→대화 시작**을 누르고 브라우저 마이크를 허용한다.
+Web Speech API의 `ko-KR` 전사를 기존 packing 처리기로 전달한다. Chrome/Edge localhost 또는 HTTPS가 필요하다.
+실제 카메라는 별도 가중치/추론 의존성을 준비한 뒤 활성화한다. 명시적 mock backend만 합성 탐지를 허용한다.
+기존 단일 파지 위치 승인 UI는 새 제어기로 연결된다. 기존 17단계 시나리오의 순서는 유지하며
+그 실물 실행 경로까지 이 새 API로 대체했다고 간주하지 않는다.
+
+## 수동 버튼 제어·RFID 태그 인식·카메라 통합
+
+- **수동 버튼 제어 (음성 인식 대체 UI)**:
+  - 실습실에서 마이크나 Web Speech API를 사용할 수 없는 경우, 메인 대시보드 우측 **[현재 주문 · 수동 버튼 및 RFID 제어]** 패널과 음성 패널 내 **버튼으로 실행** 영역에서 모든 명령(`▶ 시작 (재개)`, `⏸ 정지`, `🦾 집어 (피킹)`, `📦 재고 조회`, `📋 주문 조회`, `🛒 예시 주문`)을 클릭 한 번으로 동일하게 실행할 수 있다.
+- **RFID 태그 인식 및 작업 큐 (`robot_rfid/`)**:
+  - `https://github.com/vision-picking-robot/rfid-pick-and-place`의 PC/SC 리더기(`ACR1555`/`ACR1552`) 스캐너, 절전 해제 도구(`robot_rfid/rfid_power.py`), SQLite 작업 큐(`robot_rfid/database.py`), 오케스트레이터(`robot_rfid/orchestrator.py`), API 엔드포인트(`/api/v1/tags/{uid}`, `/api/v1/scan-event`, `/api/v1/rfid/scan`, `/api/v1/current-task`, `/api/v1/tasks/{task_id}`)가 `8000` 웹 서버와 `8011` 제어기 서버 양쪽에 통합되어 있다.
+  - 등록된 4종 상품 태그: `0B71E55D` (쫀득초코칩/BOX-01), `0B71E75D` (복숭아녹차 340ml 페트병/BOX-02), `0B71E65D` (스팸/BOX-03), `0B71ED5D` (물티슈/BOX-04). 인형 태그 `0B71EC5D`는 일부러 등록하지 않는다(찍으면 "등록되지 않은 태그입니다"로 거부, 시연용).
+- **카메라 영상 및 RealSense 3D 깊이/높이 측정 (`web/app/`, `camera_depth/`)**:
+  - 웹 대시보드(`web/app/capture.py`, `web/app/realsense.py`, `web/app/pick_plane.py`)에 OpenCV(Linux V4L2 / Windows DirectShow / macOS AVFoundation) 실시간 카메라 스트리밍, Intel RealSense 깊이·적외선·RGBD·3D 포인트 클라우드 뷰, 4점 평면 호모그래피(`PickPlane`) 좌표 변환이 포함되어 있다.
+  - 추가적으로 `camera_depth/` 폴더에 RealSense D455f 기반 실시간 3D 높이·거리 측정기(`camera_depth/realsense_measure_height.py`, `camera_depth/run_measure_height.bat`) 및 전용 뷰어(`camera_depth/realsense_viewer.py`, `camera_depth/run_viewer.bat`)가 함께 포함되어 있다.
+
+## 파지 실패 자동 재시도
+
+그리퍼가 빈 채로 닫히면(전류·위치로 판정) 그리퍼를 열고 위로 빠진 뒤 물체 위치를 다시 찾아 **한 번 더** 집는다.
+두 번째도 실패하면 로봇을 정지(비상 정지 상태)하고 폰·웹·Windows 관제 프로그램에 "파지 실패"를 알린다(폰은 진동).
+물건과 그리퍼를 확인한 뒤 **[정지 해제]**(폰·웹, 또는 음성 "정지 해제" / 자동 진행 중 "작업 재개")를 누르면
+그리퍼를 열고 홈으로 돌아가 다음 작업을 기다린다. 재시도 횟수는 `--grasp-retries N`(기본 1, 0이면 예전처럼 빈 그리퍼로 진행).
+
+## 작업 영역 안전 감시 (USB 웹캠)
+
+작업대에 고정한 USB 웹캠으로, 로봇이 **물건을 집으러 그 구역에 들어가는 동안에만**(접근 → 하강 → 집기) 그 구역 근처의
+작업자를 감시한다. 상자로 옮기는 동안과 대기 중에는 경고하지 않는다. (`web/app/safety.py`, 대시보드 [작업 영역 안전 감시])
+
+1. 작업자가 그 구역 근처에 들어오면 **1차 경고음 3초**.
+2. 3초 뒤에도 있으면 **로봇 정지** (진행 중인 동작을 바로 멈춤, `move_stop`).
+3. 구역 근처에 3초 동안 아무도 없으면 **"안전구역 확보. 로봇을 다시 가동합니다."** 음성 안내 후 멈췄던 동작부터 스스로 재가동.
+
+- 대시보드 [작업 영역 안전 감시]에서 **웹캠**을 고르고, **구역 설정**으로 영상 위에 구역 1~4의 꼭짓점을 4곳씩 찍는다(`state/safety.json`에 저장).
+  환경 변수 `SAFETY_CAMERA_INDEX`로 웹캠 번호를 미리 정할 수도 있다.
+- 브라우저는 클릭 전에는 소리를 낼 수 없으므로 시연 전에 **[경고음·음성 켜기]**를 한 번 누른다.
+- 사람 인식은 기본 YOLO(COCO) 모델의 `person` 클래스를 쓰고, 모델이 없으면 OpenCV 사람 검출기(HOG)를 쓴다.
+- 카메라 없이 리허설: **[가상 작업자 진입]** 버튼 (피킹 접근 중일 때 경고 → 정지 → 재가동이 그대로 동작).
+- 갤럭시 리모컨에도 화면 맨 위에 경고(노랑)·정지(빨강)·안전구역 확보(파랑) 배너가 뜨고 단계마다 다른 패턴으로 진동한다.
+- 로봇 쪽은 `project_cycle.py ... --api`로 실행 중이면 따로 설정할 것이 없다.
+- 시연 보조 기능이며 인증된 안전장치가 아니다. 펜던트 E-Stop을 항상 가까이 둔다. 웹캠이 끊기면 감시가 멈추므로 화면의 카메라 상태를 확인한다.
+
+## 문서·검증
+
+최신 커밋의 검증·최적화 결과는 [최신 검증 리포트](latest-validation-review.md)에 있다.
+검증된 `review/5baa41d-validation`의 수정은 **main에 병합되었다**. 실습실에서는 main을 갱신해 사용한다.
+대시보드 정적 파일 40개와 기존 17단계 작업 순서를 보존했다.
+
+| 기준 환경에서 완료한 검증 | 결과 |
+|---|---|
+| Ubuntu 24.04 제어기·RFID | 45개 통과 |
+| Ubuntu 24.04 웹 전체 회귀 | 265개 통과 |
+| JavaScript UI·음성·작업 순서 | 50개 통과 |
+| ROS 2 Jazzy 두산 드라이버·그리퍼 플러그인 | 빌드·링크·모의 테스트 통과 |
+| wheel 단독 설치 및 MOCK API | 통과 |
+
+- [OS/ROS 확정: Ubuntu 24.04 / ROS 2 Jazzy](01-environment-report.md)
+- [통신·웨이포인트·좌표 변환·그리퍼 결함 명세](02-legacy-assets.md)
+- [Web Speech API·페이로드·웹 연결 계약](03-pipeline-and-speech.md)
+- [현장 인수인계와 검증 한계](04-runbook-and-validation.md)
+- [추출 자산 JSON](legacy-assets.json), [이식 출처](../provenance.json), [Payload Schema](../config/payload.schema.json)
+
+이전 분석 자료에는 과거 작업 폴더/8010 예시가 남아 있다. **현재 실행은 이 README와
+[Ubuntu 현장 인수인계](04-runbook-and-validation.md)의 경로·8011 기준을 따른다.**
+원본 소스 출처와 snapshot 범위는 [웹 출처](web-source-provenance.json)에 기록했다.
+
+```bash
+python -m pytest tests robot_rfid -q
+(cd web && python -m pytest tests -q)
+# Node.js가 있으면 보존된 UI 및 음성 JavaScript 검사
+node --test web/tests/*.test.cjs
+```
+
+위 결과는 가상 장치·빌드 검증이다. 실제 마이크 인식, RealSense 스트림, 현장 TCP·카메라 보정 및
+실물 파지는 별도 확인이 필요하다. 이전 리포트의 Windows 실패·미검증 기록과 최신 Ubuntu/Jazzy
+검증 결과는 [최신 검증 리포트](latest-validation-review.md)에서 구분해 확인한다.
