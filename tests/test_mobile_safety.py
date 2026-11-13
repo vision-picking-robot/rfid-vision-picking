@@ -26,8 +26,14 @@ def test_estop_watch_sends_stop_and_blocks_next_step(monkeypatch):
     watch = cycle.MobileEStopWatch('http://robot:8000', lambda: stops.append(1),
                                    lambda e, **k: logs.append(e), period=0.01)
     states = iter([False, True])
-    monkeypatch.setattr(watch, 'poll', lambda: next(states))
-    watch.run()
+    # run() keeps polling after an E-stop (the cycle waits for reset_stop), so drive it from a thread.
+    monkeypatch.setattr(watch, 'poll', lambda: next(states, True))
+    thread = threading.Thread(target=watch.run, daemon=True)
+    thread.start()
+    assert watch.tripped.wait(5), 'E-stop was not picked up'
+    watch.alive.clear()
+    thread.join(5)
+    assert not thread.is_alive()
     assert stops == [1] and 'mobile_emergency_stop' in logs
     with pytest.raises(RuntimeError, match='emergency stop'):
         watch.check()
