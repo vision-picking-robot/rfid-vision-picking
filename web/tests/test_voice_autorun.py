@@ -18,6 +18,7 @@ class FakeRobot:
         self.completed = None
         self.task = None
         self.estop = False
+        self.paused = False
         self.commands = []
         self.seq = 0
         self.script = []
@@ -25,7 +26,11 @@ class FakeRobot:
     async def snapshot(self):
         if self.script:
             self.script.pop(0)()
-        return {'robot_connected': True, 'emergency_stopped': self.estop, 'robot_link': dict(self.link),
+        if self.paused:  # a paused cycle holds before its next step
+            return {'robot_connected': True, 'emergency_stopped': self.estop, 'paused': True,
+                    'robot_link': {'state': 'PAUSED', 'message': '일시정지'}, 'last_scan': self.last_scan,
+                    'last_completed_event': self.completed, 'current_task': self.task}
+        return {'robot_connected': True, 'emergency_stopped': self.estop, 'paused': False, 'robot_link': dict(self.link),
                 'last_scan': self.last_scan, 'last_completed_event': self.completed, 'current_task': self.task}
 
     def queue_ready(self, uid, name):
@@ -50,6 +55,8 @@ class FakeRobot:
         if command == 'reset_stop':
             self.estop = False
             self.link = {'state': 'IDLE', 'message': '태그 대기 중'}
+        if command in ('pause', 'resume'):
+            self.paused = command == 'pause'
         if command != 'scan_dispatch':
             return {'message': command}
         uid = self.tags.pop(0)
@@ -145,7 +152,7 @@ def test_no_tag_retries_the_same_box_and_stop_then_resume_carries_on():
         await until(lambda: voice.auto.done == 1 and voice.auto.phase == 'swap_wait')
         await say(voice, '상자 교환 완료')
         await until(lambda: voice.auto.phase == 'picking')
-        await say(voice, '멈춰')                                # heard even while muted
+        await say(voice, '정지')                                # heard even while muted
         assert robot.commands[-1] == 'emergency_stop'
         await until(lambda: voice.auto.phase == 'stopped')
         assert voice.auto.active and not voice.auto.muted and '정지했습니다' in voice.announcement
@@ -155,6 +162,21 @@ def test_no_tag_retries_the_same_box_and_stop_then_resume_carries_on():
         await until(lambda: voice.auto.done == 2 and voice.auto.phase == 'swap_wait')
         assert 'reset_stop' in robot.commands
         assert robot.commands.count('scan_dispatch') == 4      # the interrupted box is scanned again
+    asyncio.run(scenario())
+
+
+def test_pause_words_hold_a_running_box_and_resume_carries_on():
+    async def scenario():
+        robot = FakeRobot(['0B71E65D'])
+        voice = make_voice(robot)
+        await say(voice, '피킹 로봇 가동')
+        await until(lambda: voice.auto.phase == 'picking')
+        await say(voice, '잠깐만')                              # pause, heard while muted (not an E-stop)
+        assert robot.commands[-1] == 'pause' and not robot.estop
+        assert await say(voice, '스팸 집어줘') == ''             # other speech still ignored
+        await say(voice, '작업 재개')                            # "재개" works while paused
+        assert robot.commands[-1] == 'resume' and not robot.paused
+        await until(lambda: voice.auto.done == 1)
     asyncio.run(scenario())
 
 

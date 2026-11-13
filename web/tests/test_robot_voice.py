@@ -7,8 +7,12 @@ from app.robot_voice import parse
 
 
 def test_parse_maps_phrases_to_robot_actions():
-    assert parse('멈춰').command == 'emergency_stop' and not parse('멈춰').confirm
-    assert parse('피킹 일시정지해줘').command == 'pause'
+    # emergency stop: only 정지 / 스톱
+    for phrase in ('정지', '스톱', '로봇 정지해', 'stop'):
+        assert parse(phrase).command == 'emergency_stop' and not parse(phrase).confirm, phrase
+    # pause: 일시정지, 대기, anything with 잠깐/잠시, and 멈춰/그만
+    for phrase in ('피킹 일시정지해줘', '대기', '잠깐', '잠깐만요', '잠시 멈춰', '잠시만', '멈춰', '그만'):
+        assert parse(phrase).command == 'pause' and not parse(phrase).confirm, phrase
     assert parse('정지 해제').command == 'reset_stop' and parse('정지 해제').confirm
     pick = parse('물티슈 집어줘')
     assert pick.kind == 'pick' and pick.command == '0B71ED5D' and pick.confirm
@@ -48,7 +52,7 @@ def test_dashboard_voice_drives_the_robot_paths(tmp_path):
         assert scan['source'] == 'voice' and scan['accepted']
         # stop runs at once, even while a question is pending
         assert '홈 자세로 이동할까요' in say('홈으로')
-        say('멈춰')
+        say('정지')
         status = client.get('/api/v1/mobile/status').json()
         assert status['emergency_stopped'] and status['commands'][-1]['command'] == 'emergency_stop'
         assert not any(c['command'] == 'home' for c in status['commands'])
@@ -60,6 +64,24 @@ def test_dashboard_voice_drives_the_robot_paths(tmp_path):
         assert '복숭아녹차' in say('재고 알려줘')
         assert '물티슈 집어줘' in say('오늘 날씨 어때')
         assert '현재 작업은' in say('지금 상태')
+
+
+def test_manual_lists_the_words_the_recognizer_uses(tmp_path):
+    from app import robot_voice as rv
+    with TestClient(create_app(Settings(camera_autostart=False), state_root=tmp_path)) as client:
+        manual = client.get('/api/voice/manual').json()
+    estop, pause, reset = manual['immediate']
+    assert estop['words'] == ['정지', '스톱', 'stop']
+    assert all(parse(w).command == 'emergency_stop' for w in estop['words'])
+    assert all(parse(w).command == 'pause' for w in pause['words'] if not w.startswith('('))
+    assert all(parse(w).command == 'reset_stop' for w in reset['words'])
+    picks = manual['asked'][0]['words']
+    assert len(picks) == len(rv.ITEMS) and picks[0].startswith('물티슈')
+    assert '피킹 로봇 가동' in [s['say'] for s in manual['auto']['steps']]
+    titles = [p['title'] for p in manual['packing']]
+    assert '재고 조회' in titles and '주문 확정' in titles
+    # phrases the robot takes over (멈춰 / 시작 / 집어) are not listed as packing-demo phrases
+    assert not any('멈춰' in ' '.join(p['phrases']) for p in manual['packing'])
 
 
 def test_particles_follow_the_item_name():

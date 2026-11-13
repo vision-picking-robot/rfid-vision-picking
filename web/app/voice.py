@@ -131,7 +131,11 @@ class Voice:
                 self.announce('피킹 로봇 가동을 중지합니다.')
                 return ''
             if auto.muted:
-                return ''  # robot working: other voices and noise are ignored
+                # robot working: other voices and noise are ignored, except "재개" after a pause (잠깐/대기)
+                if word == 'resume' or (action is not None and action.command == 'resume'):
+                    if (await self.robot.app.state.robot_snapshot()).get('paused'):
+                        return await self.robot.run(robot_voice.Action('control', 'resume', '작업 재개'))
+                return ''
             if auto.phase == 'stopped':
                 if word in ('resume', 'start'):
                     auto.resume()
@@ -183,6 +187,12 @@ def check_control_origin(request):
 @router.get('/status')
 async def status(request: Request):
     return request.app.state.voice.status()
+
+@router.get('/manual')
+async def manual():
+    """Voice manual built from the recognizer's own word lists (dashboard [음성 명령] → 사용법)."""
+    from .voice_manual import build
+    return build(ROBOT_OWNED)
 
 @router.get('/history')
 async def history(request: Request):
