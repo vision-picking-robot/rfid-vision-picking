@@ -456,15 +456,20 @@ async def depth_objects(request: Request, min_height_mm: float = 15.0):
     `corner` is the nearest calibration corner (1-4) in BASE X/Y; the robot side maps corners to
     products (one product is placed near each corner).
     """
+    return await locate_depth_objects(request.app, min_height_mm=min_height_mm)
+
+
+async def locate_depth_objects(app, sensors=None, min_height_mm=15.0):
+    """Depth objects of one RealSense frame (`sensors`, default the newest); its colour image is sensors.color."""
     from .depth_locator import find_objects
 
-    runtime = request.app.state.pipeline
+    runtime = app.state.pipeline
     camera = CameraFrame.from_packet(await asyncio.to_thread(runtime.pick_frame))
-    calibration = request.app.state.robot.picks.calibration(camera)
+    calibration = app.state.robot.picks.calibration(camera)
     if not calibration["revision"]:
         raise DomainError("먼저 이 카메라와 해상도의 작업 평면을 보정하세요.")
     plane = PickPlane(Calibration(**calibration))
-    sensors = runtime.latest_sensors()
+    sensors = sensors or runtime.latest_sensors()
     try:
         found = await asyncio.to_thread(find_objects, sensors.depth, sensors.intrinsics, plane.pixels, min_height_mm)
     except ValueError as exc:

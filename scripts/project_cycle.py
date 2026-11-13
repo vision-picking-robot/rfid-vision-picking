@@ -730,6 +730,37 @@ class Cycle:
         if any(math.dist(s['base'], obj['base']) > tol or abs(s['height_mm'] - obj['height_mm']) > tol for s in samples):
             raise RuntimeError(f'zone {zone} is not steady across {len(samples)} depth frames '
                                '(person or moving object over the table?)')
+        return self._grasp_from_object(product, obj, zone, source=f'depth camera zone {zone}')
+
+    def detect_by_yolo(self, product):
+        """Locate `product` anywhere in the work area: the product YOLO box (web /api/product-vision/locate)
+        picks the depth object under it, so no fixed zone per product is needed."""
+        import httpx
+        url = f"{self.args.depth_api.rstrip('/')}/api/product-vision/locate"
+        samples = []
+        for i in range(int(self.depth_cfg.get('samples', 3))):
+            if i:
+                time.sleep(0.3)
+            response = httpx.get(url, params={'product': product}, timeout=15)
+            if response.status_code == 404:
+                raise RuntimeError(response.json().get('detail') or f'YOLO did not find {product}')
+            data = response.raise_for_status().json()
+            if data.get('revision') != self.cal_revision:
+                raise RuntimeError('web calibration revision differs from --picking-config; re-export the calibration')
+            samples.append(data)
+        tol = float(self.depth_cfg.get('stable_tol_mm', 10.0))
+        obj = samples[-1]['object']
+        if any(math.dist(s['object']['base'], obj['base']) > tol or
+               abs(s['object']['height_mm'] - obj['height_mm']) > tol for s in samples):
+            raise RuntimeError(f'{product} is not steady across {len(samples)} frames '
+                               '(person or moving object over the table?)')
+        zone = obj.get('corner')
+        self._zone = zone  # the safety watch guards the nearest corner zone during the approach
+        conf = samples[-1]['detection']['confidence']
+        return self._grasp_from_object(product, obj, zone, source=f'yolo {conf:.2f}')
+
+    def _grasp_from_object(self, product, obj, zone, source):
+        """Grasp pose for a depth object (base X/Y, height, footprint, short-axis yaw)."""
         short_mm = (obj.get('footprint_mm') or [0.0])[0]
         max_open = float(self.depth_cfg.get('gripper_max_open_mm', 100.0))
         if short_mm > max_open:
@@ -761,7 +792,7 @@ class Cycle:
         else:  # fingers close along base yaw (close0 - rz) for tool orientation (0, 180, rz)
             rz = (float(close0) - obj['short_axis_yaw_deg'] + 90.0) % 180.0 - 90.0
         x, y = self.correct_base(obj['base'])
-        self.log('vision', source=f'depth camera zone {zone}', product=product, base=[x, y], camera_base=obj['base'],
+        self.log('vision', source=source, product=product, base=[x, y], camera_base=obj['base'],
                  height_mm=obj['height_mm'], footprint_mm=obj.get('footprint_mm'),
                  short_axis_yaw=obj.get('short_axis_yaw_deg'), rz=round(rz, 1), grasp_z=grasp_info['grasp_z_mm'])
         remote = getattr(self, 'estop', None)
@@ -779,6 +810,8 @@ class Cycle:
         product = task.get('yolo_class_name') if isinstance(task, dict) else task
         self._zone = None
         if getattr(self.args, 'depth_api', None):
+            if getattr(self.args, 'vision', 'zone') == 'yolo':
+                return self.detect_by_yolo(product)
             return self.detect_by_depth(product)
         if product not in self.products or not self.products[product]['real'].get('taught'):
             self.log('vision_fallback', requested=product, used=self.args.product)
@@ -1226,6 +1259,9 @@ def main(argv=None):
                              'stop, alert phone/web/control program and wait for [정지 해제] (0 = old behaviour)')
     parser.add_argument('--remote-rfid', action='store_true',
                         help='with --api: wait for tasks queued by another PC (POST /api/v1/scan-event) instead of scanning')
+    parser.add_argument('--vision', choices=['zone', 'yolo'], default='zone',
+                        help="with --depth-api: 'zone' = one product per corner zone, 'yolo' = the product YOLO "
+                             '(web /api/product-vision) finds it anywhere in the work area')
     parser.add_argument('--box-check', action='store_true',
                         help='remote mode: confirm each placed item landed in the box with the packing-box webcam '
                              '(web /api/box-check); a failed check marks the task DEFECTIVE but does not stop')

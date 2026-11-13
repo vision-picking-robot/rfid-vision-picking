@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>상품 인식 학습 · Vision Lab</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/station-shell.css">
+  <link rel="stylesheet" href="/static/theme.css">
+  <script type="module" src="/static/station-nav.js"></script>
+  <style>
+    .pv { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+    @media (max-width: 1000px) { .pv { grid-template-columns: minmax(0, 1fr); } }
+    .pv-card { background: var(--e-surface, #0B1220); border: 1px solid var(--e-line); border-radius: 14px; padding: 16px; }
+    .pv-card h2 { margin: 0 0 4px; font-size: 16px; }
+    .pv-card .meta { margin: 0 0 12px; color: var(--e-text-2); font-size: 13px; }
+    .pv-view { position: relative; aspect-ratio: 4 / 3; background: #000; border-radius: 10px; overflow: hidden; }
+    .pv-view img { width: 100%; height: 100%; object-fit: fill; display: block; }
+    .pv-view svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+    .pv-view .depth { fill: none; stroke: rgba(148, 163, 184, .8); stroke-width: 2; stroke-dasharray: 6 5; }
+    .pv-view .det { fill: rgba(56, 189, 248, .10); stroke: var(--e-sky); stroke-width: 3; }
+    .pv-view .det-label { fill: var(--e-sky); font: 700 20px var(--e-font); }
+    .pv-products { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .pv-products button { display: flex; justify-content: space-between; align-items: center; padding: 14px; min-height: 56px; font-size: 15px; }
+    .pv-products b { font-size: 18px; color: var(--e-sky); }
+    .pv-status { min-height: 22px; margin: 12px 0 0; font-size: 14px; }
+    .pv-status.err { color: var(--e-danger); }
+    .pv-thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; margin-top: 12px; }
+    .pv-thumbs figure { margin: 0; position: relative; }
+    .pv-thumbs img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 6px; display: block; }
+    .pv-thumbs figcaption { font-size: 11px; color: var(--e-text-2); margin-top: 2px; }
+    .pv-thumbs button { position: absolute; top: 4px; right: 4px; padding: 2px 7px; min-height: 0; font-size: 12px; }
+    .pv-train { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .pv-train input { width: 80px; }
+    .pv-bar { height: 8px; background: var(--e-line); border-radius: 99px; overflow: hidden; margin: 12px 0 6px; }
+    .pv-bar i { display: block; height: 100%; width: 0; background: var(--e-sky); transition: width .4s; }
+    .pv-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 14px; margin: 10px 0 0; font-size: 13px; }
+    .pv-facts dt { color: var(--e-text-2); }
+    .pv-facts dd { margin: 0; font-weight: 600; }
+    .pv-steps { margin: 0; padding-left: 18px; color: var(--e-text-2); font-size: 13px; line-height: 1.7; }
+  </style>
+</head>
+<body class="station-shell" data-workspace="training">
+  <aside class="station-rail" id="station-rail"></aside>
+  <main>
+    <header>
+      <h1><b>상품 인식 학습</b><span>YOLOv8 · 깊이 자동 라벨</span></h1>
+      <a href="/training">모델 관리로</a>
+    </header>
+    <div class="pv">
+      <section class="pv-card">
+        <h2>실시간 화면</h2>
+        <p class="meta" id="view-meta">점선: 깊이 카메라가 찾은 물체 · 파란 상자: 학습된 모델이 알아본 상품</p>
+        <div class="pv-view"><img src="/stream.mjpg" alt="RealSense 컬러 영상"><svg id="overlay" viewBox="0 0 640 480" preserveAspectRatio="none"></svg></div>
+        <ol class="pv-steps">
+          <li>작업 영역 안에 <b>상품 하나만</b> 놓습니다(사람 손은 화면 밖으로).</li>
+          <li>아래에서 그 상품 버튼을 누르면 사진과 라벨(깊이로 찾은 테두리)이 저장됩니다.</li>
+          <li>위치·방향·눕힘을 바꿔 가며 상품마다 <b>80~120장</b>, 작업 영역 구석구석에서 찍습니다.</li>
+          <li>네 상품을 다 찍으면 [학습 시작]. 끝나면 이 화면에서 바로 인식 결과를 확인합니다.</li>
+        </ol>
+      </section>
+      <div style="display:grid; gap:16px">
+        <section class="pv-card">
+          <h2>사진 찍기</h2>
+          <p class="meta">버튼 = 지금 화면을 그 상품 사진으로 저장 (숫자: 저장된 장수)</p>
+          <div class="pv-products" id="products"></div>
+          <p class="pv-status" id="capture-status" role="status"></p>
+          <div class="pv-thumbs" id="thumbs"></div>
+        </section>
+        <section class="pv-card">
+          <h2>학습</h2>
+          <p class="meta">이 PC의 CPU로 학습합니다. 상품당 100장, 60회 기준 대략 20~40분.</p>
+          <div class="pv-train">
+            <label>반복 횟수 <input type="number" id="epochs" min="1" max="300" value="60"></label>
+            <button type="button" id="train">학습 시작</button>
+            <button type="button" class="secondary" id="cancel" hidden>중지</button>
+          </div>
+          <div class="pv-bar"><i id="bar"></i></div>
+          <p class="pv-status" id="train-status" role="status">—</p>
+          <dl class="pv-facts" id="model"></dl>
+        </section>
+      </div>
+    </div>
+  </main>
+  <script type="module">
+    const $ = id => document.getElementById(id);
+    const pct = v => v == null ? "—" : `${(v * 100).toFixed(1)}%`;
+    let status = null, hasModel = false, busy = false;
+
+    async function call(path, options = {}) {
+      const response = await fetch("/api/product-vision/" + path, {cache: "no-store", ...options,
+        headers: options.body ? {"Content-Type": "application/json"} : {}});
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || "요청 실패");
+      return data;
+    }
+
+    function renderProducts() {
+      $("products").innerHTML = status.products.map(p =>
+        `<button type="button" data-product="${p.key}"><span>${p.name}</span><b>${p.count}</b></button>`).join("");
+      $("thumbs").innerHTML = status.recent.map(s => `<figure>
+        <img src="/api/product-vision/samples/${s.id}.jpg" alt="${s.product}" loading="lazy">
+        <button type="button" class="secondary" data-delete="${s.id}" aria-label="삭제">✕</button>
+        <figcaption>${status.products.find(p => p.key === s.product)?.name || s.product} · ${s.time}</figcaption></figure>`).join("");
+    }
+
+    function renderTraining() {
+      const t = status.training, a = status.active;
+      hasModel = Boolean(a);
+      const running = t && (t.state === "preparing" || t.state === "training");
+      $("train").disabled = running;
+      $("cancel").hidden = !running;
+      $("bar").style.width = t && t.epochs ? `${Math.round(100 * (t.epoch || 0) / t.epochs)}%` : "0";
+      const m = t?.metrics || {};
+      $("train-status").textContent = !t ? "아직 학습하지 않았습니다." :
+        t.state === "preparing" ? "학습 준비 중…" :
+        t.state === "training" ? `학습 중 · ${t.epoch}/${t.epochs}회 · mAP50 ${pct(m["metrics/mAP50(B)"])}` :
+        t.state === "done" ? `완료 (${t.finished}) · 새 모델을 바로 사용합니다` :
+        t.state === "cancelled" ? "중지했습니다." : `실패: ${t.error || "로그를 확인하세요"}`;
+      $("train-status").className = "pv-status" + (t?.state === "failed" ? " err" : "");
+      $("model").innerHTML = a ? `
+        <dt>사용 중인 모델</dt><dd>${a.run}</dd>
+        <dt>학습 일시</dt><dd>${a.trained}</dd>
+        <dt>정확도 mAP50</dt><dd>${pct(a.metrics?.["metrics/mAP50(B)"])}</dd>
+        <dt>mAP50-95</dt><dd>${pct(a.metrics?.["metrics/mAP50-95(B)"])}</dd>
+        <dt>학습/검증 사진</dt><dd>${a.counts?.train ?? "—"} / ${a.counts?.val ?? "—"}</dd>` : "";
+    }
+
+    async function refresh() {
+      try { status = await call("status"); renderProducts(); renderTraining(); } catch { /* server restarting */ }
+    }
+
+    async function overlay() {
+      const svg = $("overlay");
+      try {
+        const data = hasModel ? await call("detect")
+          : {objects: (await fetch("/api/robot/pick/depth-objects", {cache: "no-store"}).then(r => r.json())).objects || [], detections: []};
+        const parts = [];
+        for (const o of data.objects || []) {
+          if (!o.inside || !o.bbox) continue;
+          const [x0, y0, x1, y1] = o.bbox;
+          parts.push(`<rect class="depth" x="${x0}" y="${y0}" width="${x1 - x0}" height="${y1 - y0}"/>`);
+        }
+        for (const d of data.detections || []) {
+          const [x0, y0, x1, y1] = d.xyxy;
+          parts.push(`<rect class="det" x="${x0}" y="${y0}" width="${x1 - x0}" height="${y1 - y0}"/>`,
+                     `<text class="det-label" x="${x0 + 4}" y="${Math.max(20, y0 - 6)}">${d.name} ${Math.round(d.confidence * 100)}%</text>`);
+        }
+        svg.innerHTML = parts.join("");
+      } catch { svg.innerHTML = ""; }
+      setTimeout(overlay, hasModel ? 700 : 1000);
+    }
+
+    document.addEventListener("click", async event => {
+      const product = event.target.closest("[data-product]")?.dataset.product;
+      const remove = event.target.closest("[data-delete]")?.dataset.delete;
+      const msg = $("capture-status");
+      try {
+        if (product && !busy) {
+          busy = true; msg.className = "pv-status"; msg.textContent = "찍는 중…";
+          const sample = await call("capture", {method: "POST", body: JSON.stringify({product})}).finally(() => { busy = false; });
+          msg.textContent = `저장됨 · 높이 ${sample.height_mm ?? "—"} mm · 위치 ${sample.base ? sample.base.join(", ") : "—"}`;
+          await refresh();
+        } else if (remove) {
+          status = await call("samples/" + remove, {method: "DELETE"}); renderProducts();
+        }
+      } catch (error) { msg.className = "pv-status err"; msg.textContent = error.message; }
+    });
+    $("train").addEventListener("click", async () => {
+      try { await call("train", {method: "POST", body: JSON.stringify({epochs: Number($("epochs").value) || 60})}); await refresh(); }
+      catch (error) { $("train-status").className = "pv-status err"; $("train-status").textContent = error.message; }
+    });
+    $("cancel").addEventListener("click", async () => { await call("train/cancel", {method: "POST"}).catch(() => {}); await refresh(); });
+
+    await refresh();
+    setInterval(refresh, 3000);
+    overlay();
+  </script>
+</body>
+</html>

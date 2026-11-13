@@ -29,6 +29,7 @@ from .robot_voice import RobotVoice
 from .picking_integration import router as picking_integration_router
 from .safety import SafetyMonitor, router as safety_router
 from .box_check import BoxCheck, router as box_check_router
+from .product_vision import ProductVision, router as product_vision_router
 
 
 class RevalidatedStatic(StaticFiles):
@@ -103,6 +104,9 @@ def create_app(settings=None, pipeline_factory=Pipeline, state_root=None):
         # Packing-box webcam: confirms each placed item landed in the box; see app/box_check.py
         box_check = BoxCheck(Path(state_root or settings.state_dir) / "box_check.json", settings)
         application.state.box_check = box_check
+        # Product YOLO (depth-labelled photos, CPU training, locate for the robot); see app/product_vision.py
+        product_vision = ProductVision(Path(state_root or settings.state_dir) / "product_vision")
+        application.state.product_vision = product_vision
         try:
             pipeline.start()
             safety.start()
@@ -116,6 +120,7 @@ def create_app(settings=None, pipeline_factory=Pipeline, state_root=None):
             finally:
                 await asyncio.to_thread(safety.stop)
                 await asyncio.to_thread(box_check.stop)
+                product_vision.stop()
                 await asyncio.to_thread(pipeline.stop)
 
     application = FastAPI(title="YOLOv8 Local Camera", version="0.1.0", lifespan=lifespan)
@@ -125,6 +130,7 @@ def create_app(settings=None, pipeline_factory=Pipeline, state_root=None):
     application.include_router(picking_integration_router)
     application.include_router(safety_router)
     application.include_router(box_check_router)
+    application.include_router(product_vision_router)
     install_robot_routes(application)
     rfid_root = Path(state_root) if state_root is not None else REPO_ROOT / 'state'
     rfid_root.mkdir(parents=True, exist_ok=True)
@@ -143,6 +149,10 @@ def create_app(settings=None, pipeline_factory=Pipeline, state_root=None):
     @application.get("/training", include_in_schema=False)
     async def training_workspace():
         return FileResponse(STATIC / "training.html", headers={"Cache-Control": "no-store"})
+
+    @application.get("/product-vision", include_in_schema=False)
+    async def product_vision_page():
+        return FileResponse(STATIC / "product-vision.html", headers={"Cache-Control": "no-store"})
 
     @application.get("/healthz")
     async def health():
