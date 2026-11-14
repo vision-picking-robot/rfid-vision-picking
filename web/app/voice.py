@@ -191,6 +191,11 @@ class Voice:
                 return await self.robot.run(action)
             return '진행 중입니다. 새 박스로 바꾼 뒤 알려 주세요.'
         unfinished = auto is not None and auto.phase in ('error', 'idle') and 0 < auto.done < auto.rounds
+        if (unfinished and word == 'resume' and '가동' not in normalized(text)
+                and (await self.robot.app.state.robot_snapshot()).get('paused')):
+            # 잠깐/대기 outside a voice run: "재개" continues the paused robot (asked back like any resume)
+            # instead of restarting an earlier, cut-off "피킹 로봇 가동" while the robot stays paused.
+            unfinished = False
         if word == 'start' or (word == 'resume' and ('가동' in normalized(text) or unfinished)):
             # 가동 / 재가동 (or 작업 재개 after a run that was cut off): run the boxes, carrying on the count
             self.pending = None

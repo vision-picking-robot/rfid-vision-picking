@@ -180,6 +180,27 @@ def test_pause_words_hold_a_running_box_and_resume_carries_on():
     asyncio.run(scenario())
 
 
+def test_resume_after_a_pause_continues_the_robot_not_an_unfinished_run():
+    async def scenario():
+        robot = FakeRobot([])
+        voice = make_voice(robot)
+        voice.auto = robot_voice.AutoRun(voice.robot.app, voice.announce)
+        voice.auto.done = 2                                     # an earlier run was cut off at box 2 of 4
+        await say(voice, '잠깐')                                 # phone-tag task running, no voice run
+        assert robot.commands[-1] == 'pause' and robot.paused
+        reply = await say(voice, '재개')
+        assert reply == robot_voice.question(robot_voice.parse('재개'))  # asked back, no new run
+        assert not voice.auto.active
+        await say(voice, '네')
+        assert robot.commands[-1] == 'resume' and not robot.paused
+        assert 'scan_dispatch' not in robot.commands
+        assert robot.paused is False
+        await say(voice, '재개')                                 # not paused: carries on the cut-off run
+        assert voice.auto.active
+        await voice.auto.cancel()
+    asyncio.run(scenario())
+
+
 def test_phone_estop_halts_and_phone_release_resumes():
     async def scenario():
         robot = FakeRobot(['0B71E65D', '0B71E65D'])
