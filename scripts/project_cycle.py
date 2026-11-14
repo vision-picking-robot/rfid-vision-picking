@@ -37,6 +37,12 @@ OPEN_MAX = 10
 
 class GraspFailed(RuntimeError):
     """The gripper closed empty on every try: stop, tell the operator, and wait for a release."""
+
+
+class VisionMiss(RuntimeError):
+    """The requested item was not found (or not pickable) before the arm moved toward it: the task is
+    recorded as failed and the cycle waits for the next one instead of exiting."""
+
 JOINT_TOL = 1.0
 POS_TOL = 2.0
 # In-air waypoints (approach above / lift out of the grasp) near the far, stretched edge of the work
@@ -286,7 +292,8 @@ class MobileRemote(threading.Thread):
     The phone only changes state in the web process (POST /api/v1/mobile/control). This thread polls
     GET /api/v1/mobile/status?robot=<mode> (which is also the heartbeat the phone shows as "로봇 연결"):
       - emergency_stop -> move_stop at once, then every later step raises.
-      - pause / resume -> the cycle holds before its next step (a running move finishes first).
+      - pause / resume -> a running arm move is stopped at once (move_stop) and redone to the same
+        target after resume; a gripper step finishes first. The cycle holds before its next step.
       - start, scan_dispatch, home, box_placed -> queued; the main loop runs them while idle.
       - safety_hold (web/app/safety.py: a person near the zone being picked) -> move_stop at once; the
         cycle waits and redoes the interrupted move when the hold is released ("안전구역 확보").
@@ -312,7 +319,8 @@ class MobileRemote(threading.Thread):
         self._commands = []
         self._lock = threading.Lock()
         self.safety = threading.Event()  # set while the work-area safety watch holds the robot
-        self.safety_count = 0            # holds so far: a move running across a new hold is redone
+        self.safety_count = 0            # holds/pauses so far: a move running across a new one is redone
+        self.moving = False              # an arm move (movej/movel) is running: a pause stops it at once
 
     def alert(self, kind, message):
         """Operator alert for the phone / web / control program: POST /api/v1/mobile/alert (best effort)."""
@@ -396,7 +404,17 @@ class MobileRemote(threading.Thread):
             self.safety.clear()
             self.log('safety_clear', message=status.get('safety_message'))
         if status.get('paused') and not status.get('emergency_stopped'):
-            self.paused.set()
+            if not self.paused.is_set():
+                self.paused.set()
+                if self.moving:
+                    # Stop the running arm move now instead of letting it finish (up to ~15 s); the
+                    # cycle redoes that move to the same target after 재개, like after a safety hold.
+                    self.safety_count += 1
+                    self.log('pause_stop', action='move_stop')
+                    try:
+                        self.stop_fn()
+                    except Exception as error:  # noqa: BLE001
+                        self.log('move_stop_failed', source='pause', message=str(error))
         else:
             self.paused.clear()
         commands = status.get('commands') or []
@@ -584,19 +602,25 @@ class Cycle:
     def _guarded(self, name, move):
         """Run one move; if a safety hold stopped it part-way, wait for "안전구역 확보" and move to the
         same target again (the target is absolute, so redoing it simply finishes the move)."""
-        holds = lambda: getattr(getattr(self, 'estop', None), 'safety_count', 0)  # noqa: E731
+        remote = getattr(self, 'estop', None)
+        holds = lambda: getattr(remote, 'safety_count', 0)  # noqa: E731
         for attempt in range(20):
             self._estop_check()  # waits here while a safety hold or pause is active
             count = holds()
+            if remote is not None:
+                remote.moving = True
             try:
                 move()
             except Exception:
                 if holds() == count:
                     raise
-                self.log('safety_redo', name=name, attempt=attempt + 1, note='move stopped by the safety hold')
+                self.log('safety_redo', name=name, attempt=attempt + 1, note='move stopped by a safety hold or pause')
                 continue
+            finally:
+                if remote is not None:
+                    remote.moving = False
             if holds() != count:
-                self.log('safety_redo', name=name, attempt=attempt + 1, note='move stopped by the safety hold')
+                self.log('safety_redo', name=name, attempt=attempt + 1, note='move stopped by a safety hold or pause')
                 continue
             self._estop_check()
             return
@@ -661,11 +685,7 @@ class Cycle:
         P = self.poses['poses']
         self.raw.check_ready()
         # Recovery: if an earlier stop left the tool low, rise straight up before any joint move.
-        cur = FlangeOffset(self.raw, self.offset).get_current_posx(DR_BASE)
-        safe_z = P['home']['posx'][2]
-        if cur is not None and cur[2] < safe_z - POS_TOL:
-            self.log('recovery', tcp=[round(v, 1) for v in cur[:3]], rise_to=safe_z)
-            self.l('recovery_rise', [cur[0], cur[1], safe_z, *cur[3:6]], self.args.dvel)
+        self._recovery_rise()
         self.j('home', P['home']['posj'])
         self.j('label_scan_approach', P['label_scan_approach']['posj'])
         scan_hi = P['label_scan_approach']['posx']
@@ -1009,12 +1029,21 @@ class Cycle:
     def recover_home(self):
         """After a stop mid-motion: rise straight up to the home height, then go home."""
         self._safety_phase(False)
+        self._recovery_rise()
+        self.home()
+
+    def _recovery_rise(self):
+        """Rise straight up toward the home height before a joint move. On the far, stretched side of the
+        work area only as high as the arm still reaches (a full-height rise there stopped 2.4 mm short and
+        ended the cycle after an E-stop release)."""
         cur = FlangeOffset(self.raw, self.offset).get_current_posx(DR_BASE)
         safe_z = self.poses['poses']['home']['posx'][2]
-        if cur is not None and cur[2] < safe_z - POS_TOL:
-            self.log('recovery', tcp=[round(v, 1) for v in cur[:3]], rise_to=safe_z)
-            self.l('recovery_rise', [cur[0], cur[1], safe_z, *cur[3:6]], self.args.dvel)
-        self.home()
+        if cur is None or cur[2] >= safe_z - POS_TOL:
+            return
+        z = self.reach_z('recovery_rise', cur, safe_z, cur[2])
+        self.log('recovery', tcp=[round(v, 1) for v in cur[:3]], rise_to=round(z, 1))
+        if z > cur[2] + POS_TOL:
+            self.l('recovery_rise', [cur[0], cur[1], z, *cur[3:6]], self.args.dvel)
 
     def stop(self):
         self.raw.stop()
@@ -1142,6 +1171,26 @@ def box_check(api, step, log, label=None):
         return None
 
 
+def finish_held_item(runner, args, watch, log):
+    """After an E-stop reset with an item still in the gripper: put it in the box instead of going home
+    holding it (the next task would open the gripper at home and drop it). The task stays DEFECTIVE
+    (interrupted by the E-stop); a stop during this place is handled by the main loop again."""
+    import httpx
+    product = getattr(runner, '_product', None)
+    box = getattr(runner, '_task_box', None)
+    log('estop_finish_place', product=product, box=box)
+    watch.report('RUNNING', '정지 전에 잡고 있던 물품을 상자에 넣습니다.')
+    runner.place(box)
+    runner.home()
+    result = None
+    if getattr(args, 'box_check', False):
+        with httpx.Client(base_url=args.api, timeout=10) as api:
+            result = box_check(api, 'verify', log, f'{product} (비상정지 후 마무리)')
+    log('estop_finish_placed', product=product, verdict=result and result['verdict'])
+    text = '' if result is None else f" · {result['text']}"
+    watch.report('IDLE', f'정지 전에 잡고 있던 물품을 상자에 넣었습니다{text}. 작업은 비상정지로 중단 기록됩니다.')
+
+
 def run_remote_task(runner, args, log, cycle):
     """Execute the next task another PC queued through POST /api/v1/scan-event (UID -> DB match on the web)."""
     import httpx
@@ -1177,6 +1226,7 @@ def run_remote_task(runner, args, log, cycle):
     if task['status'] == 'PICKING':
         raise RuntimeError('Interrupted PICKING task requires operator reconciliation')
     tid, completed = task['task_id'], task['completed']
+    runner._task_box = task.get('target_box_id')  # an E-stop while carrying finishes into this box
     log('task', task_id=tid, uid=task.get('tag_uid'), product=task.get('yolo_class_name'),
         name=task.get('product_name'), box=task.get('target_box_id'), quantity=task['quantity'])
     patch = lambda done, status, error=None: api.patch(  # noqa: E731
@@ -1188,7 +1238,10 @@ def run_remote_task(runner, args, log, cycle):
     try:
         patch(completed, 'PICKING')
         while completed < task['quantity']:
-            target = runner.detect(task)
+            try:
+                target = runner.detect(task)
+            except RuntimeError as error:  # nothing moved toward the item yet: skip, do not stop the cycle
+                raise VisionMiss(str(error)) from error
             runner.approach(target)
             runner.grip_object()
             runner.retract()
@@ -1320,6 +1373,13 @@ def main(argv=None):
                 try:
                     run_remote_task(runner, args, log, cycle)
                 except RuntimeError as error:
+                    if isinstance(error, VisionMiss) and not (watch is not None and watch.tripped.is_set()):
+                        # Task already DEFECTIVE with the reason; the arm is still at home.
+                        log('task_skipped', cycle=cycle, message=str(error))
+                        if watch is not None:
+                            watch.busy = False
+                            watch.report('IDLE', f'물품을 찾지 못해 작업을 건너뛰었습니다: {error}')
+                        continue
                     grasp_failed = isinstance(error, GraspFailed) and watch is not None
                     if not (watch is not None and watch.tripped.is_set()) and not grasp_failed:
                         raise
@@ -1340,6 +1400,8 @@ def main(argv=None):
                     if grasp_failed:  # the fingers are still closed on nothing
                         runner.grip('gripper_open', 0, lambda p: p <= OPEN_MAX)
                     runner.recover_home()
+                    if not grasp_failed and getattr(runner, '_loaded', False) and getattr(runner, 'holding', False):
+                        finish_held_item(runner, args, watch, log)
                     watch.busy = False
                     continue
             elif args.api:

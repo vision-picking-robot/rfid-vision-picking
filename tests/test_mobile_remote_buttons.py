@@ -407,3 +407,98 @@ def test_box_check_failure_is_recorded_and_the_cycle_carries_on(live_api, tmp_pa
     with LIVE['app'].state.database.connect() as db:
         task = db.execute('SELECT status, error FROM tasks ORDER BY rowid DESC LIMIT 1').fetchone()
     assert task['status'] == 'DEFECTIVE' and '상자 투입 확인 실패' in task['error']
+
+
+def test_item_not_found_skips_the_task_and_the_cycle_keeps_waiting(live_api, tmp_path, monkeypatch):
+    """YOLO/depth cannot find the item (moved away, hand over it): the task is DEFECTIVE with the reason and
+    the cycle waits for the next tag instead of exiting; the next task runs normally."""
+    real_detect, calls = cycle.Cycle.detect, []
+
+    def flaky(self, task):
+        calls.append(task['tag_uid'])
+        if len(calls) == 1:
+            raise RuntimeError('카메라에서 스팸을(를) 찾지 못했습니다')
+        return real_detect(self, task)
+    monkeypatch.setattr(cycle.Cycle, 'detect', flaky)
+    log = tmp_path / 'miss.jsonl'
+    t, box = run_cycle(['--api', live_api, '--remote-rfid', '--cycles', '2', '--wait-timeout', '30',
+                        '--log', str(log)])
+    wait_for(lambda: any(e['event'] == 'waiting_for_tag' for e in events(log)))
+    httpx.post(live_api + '/api/v1/scan-event', json={'uid': '0B71E65D'}).raise_for_status()
+    wait_for(lambda: any(e['event'] == 'task_skipped' for e in events(log)))
+    # the cycle logs task_skipped first and reports the phone message right after it
+    wait_for(lambda: '건너뛰었습니다' in (httpx.get(live_api + '/api/v1/mobile/status').json()
+                                          ['robot_link'].get('message') or ''))
+    with LIVE['app'].state.database.connect() as db:
+        first = db.execute('SELECT status, error FROM tasks ORDER BY rowid LIMIT 1').fetchone()
+    assert first['status'] == 'DEFECTIVE' and '찾지 못했습니다' in first['error']
+    wait_for(lambda: sum(e['event'] == 'waiting_for_tag' for e in events(log)) >= 2)
+    httpx.post(live_api + '/api/v1/scan-event', json={'uid': '0B71ED5D'}).raise_for_status()
+    t.join(30)
+    assert box['rc'] == 0, 'the cycle survived the miss and finished the next task'
+    assert any(e['event'] == 'cycle_ok' for e in events(log))
+
+
+def test_estop_while_carrying_puts_the_held_item_in_the_box_after_reset(live_api, tmp_path, monkeypatch):
+    """E-stop on the way to the box, then [정지 해제]: the item still in the gripper goes into the box
+    (not home in the closed gripper, where the next task would open it and drop it)."""
+    real_place, calls = cycle.Cycle.place, []
+
+    def place(self, box_id=1):
+        calls.append(box_id)
+        if len(calls) == 1:  # stop on the way to the box, as the operator did
+            press(live_api, 'emergency_stop')
+            wait_for(lambda: self.estop.tripped.is_set())
+        return real_place(self, box_id)
+    monkeypatch.setattr(cycle.Cycle, 'place', place)
+    log = tmp_path / 'carry.jsonl'
+    t, box = run_cycle(['--api', live_api, '--remote-rfid', '--cycles', '1', '--wait-timeout', '30',
+                        '--log', str(log)])
+    wait_for(lambda: any(e['event'] == 'waiting_for_tag' for e in events(log)))
+    httpx.post(live_api + '/api/v1/scan-event', json={'uid': '0B71ED5D'}).raise_for_status()
+    wait_for(lambda: any(e['event'] == 'estop_hold' for e in events(log)))
+    assert not any(e['event'] == 'estop_finish_place' for e in events(log)), 'nothing moves before the reset'
+    press(live_api, 'reset_stop')
+    t.join(30)
+    evs = events(log)
+    assert box['rc'] == 0
+    names = [e['event'] for e in evs]
+    assert names.index('estop_released') < names.index('estop_finish_place') < names.index('estop_finish_placed')
+    assert len(calls) == 2  # the interrupted place, then the finishing one
+    steps = [e.get('name') for e in evs if e['event'] == 'step']
+    assert steps.count('release') == 1 and steps[-1] == 'home_return'
+    status = httpx.get(live_api + '/api/v1/mobile/status').json()
+    assert '상자에 넣었습니다' in (status['robot_link'].get('message') or '')
+    with LIVE['app'].state.database.connect() as db:
+        task = db.execute('SELECT status FROM tasks ORDER BY rowid DESC LIMIT 1').fetchone()
+    assert task['status'] == 'DEFECTIVE'  # recorded as interrupted by the E-stop
+
+
+def test_pause_stops_a_running_move_at_once_and_redoes_it_after_resume(live_api, tmp_path, monkeypatch):
+    log = tmp_path / 'pause.jsonl'
+    real_movel = cycle.MockRaw.movel
+
+    def slow_movel(self, *args):  # a long move, so the pause lands mid-move
+        time.sleep(1.5)
+        return real_movel(self, *args)
+    monkeypatch.setattr(cycle.MockRaw, 'movel', slow_movel)
+    t, box = run_cycle(['--api', live_api, '--remote-trigger', '--cycles', '1', '--wait-timeout', '30',
+                        '--log', str(log)])
+    wait_for(lambda: any(e['event'] == 'waiting_for_phone' for e in events(log)))
+    press(live_api, 'start')
+    wait_for(lambda: any(e['event'] == 'safety_phase' and e['active'] for e in events(log)))
+    time.sleep(0.3)  # inside a movel now
+    pressed = time.monotonic()
+    press(live_api, 'pause')
+    wait_for(lambda: any(e['event'] == 'pause_stop' for e in events(log)))
+    assert time.monotonic() - pressed < 1.2, 'the pause waited for the move to finish'
+    wait_for(lambda: any(e['event'] == 'move_stop_sent' or e['event'] == 'remote_paused' for e in events(log)))
+    time.sleep(1.6)  # let the move in flight return
+    held = len(events(log))
+    time.sleep(1.0)
+    assert len(events(log)) == held, 'robot moved while paused'
+    press(live_api, 'resume')
+    t.join(60)
+    names = [e['event'] for e in events(log)]
+    assert box['rc'] == 0 and 'cycle_ok' in names
+    assert 'safety_redo' in names and 'remote_resumed' in names
