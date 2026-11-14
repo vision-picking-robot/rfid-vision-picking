@@ -77,8 +77,14 @@ python scripts/start_lab.py --host 0.0.0.0
 # 3. 대시보드에서 카메라 선택·시작 후 피킹 사이클
 python scripts/project_cycle.py --mode real --confirm-real --cycles 0 \
   --api http://127.0.0.1:8000 --remote-rfid \
-  --picking-config config/integration.real.json --depth-api http://127.0.0.1:8000
+  --picking-config config/integration.real.json --depth-api http://127.0.0.1:8000 \
+  --vision yolo --box-check
 ```
+
+- `--vision yolo`: 학습된 상품 YOLO가 작업 영역 어디서든 태그의 상품을 찾는다. 빼면 구역 방식(구역 1~4 = 물티슈·스팸·쫀득초코칩·복숭아녹차)이라
+  구역에 다른 물품이 있으면 그 물품을 집는다.
+- `--box-check`: 상자 위 웹캠으로 물품이 상자에 들어갔는지 판정한다.
+- 깊이 정보는 카메라 영상을 누군가 볼 때만 갱신된다. 대시보드를 열어 두거나 `/stream.mjpg`를 받는 프로그램을 띄워 둔다.
 
 - Windows PC: [`windows_rfid_bridge\run_bridge.bat`](windows_rfid_bridge/README.md)
 - 갤럭시 폰: APK 설치 또는 `http://<로봇 PC IP>:8000/remote` ([galaxy_app](galaxy_app/README.md))

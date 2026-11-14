@@ -12,7 +12,7 @@
 git pull                                   # 로봇 PC(리눅스)와 Windows PC 모두
 python scripts/start_lab.py --host 0.0.0.0 # 로봇 PC: 웹 서버(8000). 음성을 쓰려면 YOLO_VOICE_ENABLED=1
 python scripts/project_cycle.py --mode real --confirm-real --api http://127.0.0.1:8000 --remote-rfid --cycles 0 \
-  --picking-config config/integration.real.json --depth-api http://127.0.0.1:8000
+  --picking-config config/integration.real.json --depth-api http://127.0.0.1:8000 --vision yolo --box-check
 ```
 - Windows PC: `windows_rfid_bridge\run_bridge.bat` → **RFID 태그 관제 프로그램**이 뜬다(첫 실행 때 `pillow`를 설치함).
   바탕화면 아이콘이 필요하면 `make_shortcut.bat`을 한 번 실행한다. 예전 콘솔은 `run_bridge_console.bat`.
