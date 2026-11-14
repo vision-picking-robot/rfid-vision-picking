@@ -321,6 +321,7 @@ class MobileRemote(threading.Thread):
         self.safety = threading.Event()  # set while the work-area safety watch holds the robot
         self.safety_count = 0            # holds/pauses so far: a move running across a new one is redone
         self.moving = False              # an arm move (movej/movel) is running: a pause stops it at once
+        self.idle_note = None            # last outcome shown in front of the next '태그 대기 중' message
 
     def alert(self, kind, message):
         """Operator alert for the phone / web / control program: POST /api/v1/mobile/alert (best effort)."""
@@ -520,8 +521,13 @@ class Cycle:
         if abs(dx) > POS_TOL or abs(dy) > POS_TOL or not (-POS_TOL <= dz <= 250):
             raise RuntimeError(f'Taught home posx does not match fkin(posj): d=({dx:.1f},{dy:.1f},{dz:.1f})')
         self.offset = 0.0 if abs(dz) <= POS_TOL else round(dz, 1)
-        self.mover = SafeMover(self.z_min, FlangeOffset(raw, self.offset), poses['motion']['max_vel'],
-                               poses['motion']['max_acc'], logger=log)
+        motion = poses['motion']
+        self.mover = SafeMover(self.z_min, FlangeOffset(raw, self.offset), motion['max_vel'],
+                               motion['max_acc'], logger=log)
+        # Empty travel moves (home, tag reader, back from the box) may use their own, higher limit.
+        self.travel_mover = SafeMover(self.z_min, FlangeOffset(raw, self.offset),
+                                      motion.get('travel_max_vel', motion['max_vel']),
+                                      motion.get('travel_max_acc', motion['max_acc']), logger=log)
         log('tcp_offset', flange_minus_taught_z=round(dz, 2), applied_offset=self.offset, z_min=self.z_min)
         P = poses['poses']
         # Taught carry: via_point, box_high and the box slot are hand-taught at their real heights.
@@ -587,17 +593,26 @@ class Cycle:
         if self.estop is not None:
             self.estop.check()
 
+    def _speed_key(self):
+        if getattr(self, '_loaded', False):
+            return 'load_speed'
+        if getattr(self, '_to_pick', False):
+            return 'empty_speed'
+        return 'travel_speed'
+
     def speed(self):
         """Speed factor: --load-speed from the descend onto the object until it is released,
         --empty-speed on the way to the object, --travel-speed for every other empty move
         (home, tag reader, back from the box)."""
-        if getattr(self, '_loaded', False):
-            key = 'load_speed'
-        elif getattr(self, '_to_pick', False):
-            key = 'empty_speed'
-        else:
-            key = 'travel_speed'
+        key = self._speed_key()
         return float(getattr(self.args, key, None) or getattr(self.args, 'empty_speed', 1.0) or 1.0)
+
+    def _travel(self, absolute):
+        """(vel, mover) override for an empty travel move when --travel-jvel/--travel-lvel is given: an
+        absolute speed checked against poses.yaml travel_max_vel/acc instead of max_vel/acc."""
+        if absolute is None or self._speed_key() != 'travel_speed':
+            return None
+        return float(absolute), getattr(self, 'travel_mover', self.mover)
 
     def _guarded(self, name, move):
         """Run one move; if a safety hold stopped it part-way, wait for "안전구역 확보" and move to the
@@ -640,8 +655,8 @@ class Cycle:
 
     def j(self, name, posj):
         t0 = time.monotonic()
-        jvel = self.args.jvel * self.speed()
-        self._guarded(name, lambda: self.mover.movej(posj, jvel, jvel))
+        jvel, mover = self._travel(getattr(self.args, 'travel_jvel', None)) or (self.args.jvel * self.speed(), self.mover)
+        self._guarded(name, lambda: mover.movej(posj, jvel, jvel))
         cur = self.raw.get_current_posj()
         err = max(abs(a - b) for a, b in zip(cur, posj))
         if err > JOINT_TOL:
@@ -650,8 +665,10 @@ class Cycle:
 
     def l(self, name, pose, vel=None, tol=POS_TOL, scaled=True):
         t0 = time.monotonic()
-        vel = (vel or self.args.lvel) * (self.speed() if scaled else 1.0)
-        self._guarded(name, lambda: self.mover.movel(pose, vel, vel, DR_BASE))
+        # Only default transfer moves (vel None) go fast; explicit slow ones (descents, recovery) stay.
+        fast = self._travel(getattr(self.args, 'travel_lvel', None)) if vel is None and scaled else None
+        vel, mover = fast or ((vel or self.args.lvel) * (self.speed() if scaled else 1.0), self.mover)
+        self._guarded(name, lambda: mover.movel(pose, vel, vel, DR_BASE))
         cur = FlangeOffset(self.raw, self.offset).get_current_posx(DR_BASE)
         err = max(abs(a - b) for a, b in zip(cur[:3], pose[:3]))
         if err > tol:
@@ -1188,7 +1205,8 @@ def finish_held_item(runner, args, watch, log):
             result = box_check(api, 'verify', log, f'{product} (비상정지 후 마무리)')
     log('estop_finish_placed', product=product, verdict=result and result['verdict'])
     text = '' if result is None else f" · {result['text']}"
-    watch.report('IDLE', f'정지 전에 잡고 있던 물품을 상자에 넣었습니다{text}. 작업은 비상정지로 중단 기록됩니다.')
+    watch.idle_note = f'정지 전에 잡고 있던 물품을 상자에 넣었습니다{text}. 작업은 비상정지로 중단 기록됩니다.'
+    watch.report('IDLE', watch.idle_note)
 
 
 def run_remote_task(runner, args, log, cycle):
@@ -1201,7 +1219,10 @@ def run_remote_task(runner, args, log, cycle):
     log('waiting_for_tag', api=args.api, note='scan a tag on the remote reader PC')
     if remote is not None:
         remote.busy = False
-        remote.report('IDLE', '태그 대기 중 — 상자 배치 버튼, 리더기 스캔 출동, 홈 복귀를 사용할 수 있습니다.')
+        # keep the last outcome (skipped item, item placed after an E-stop) visible on the phone
+        note, remote.idle_note = getattr(remote, 'idle_note', None), None
+        remote.report('IDLE', (f'{note} — ' if note else '')
+                      + '태그 대기 중 — 상자 배치 버튼, 리더기 스캔 출동, 홈 복귀를 사용할 수 있습니다.')
     started = time.monotonic()
     while True:
         task = api.get('/api/v1/current-task').raise_for_status().json()['task']
@@ -1301,6 +1322,11 @@ def main(argv=None):
                         help='speed factor (x jvel/lvel/dvel) on the way to the object (gripper empty)')
     parser.add_argument('--travel-speed', type=float, default=2.25,
                         help='speed factor for the other empty moves: home, to/from the tag reader, back from the box')
+    parser.add_argument('--travel-jvel', type=float, default=None,
+                        help='deg/s for empty travel movej (home, tag reader, back from the box), '
+                             'limited by poses.yaml travel_max_vel/acc instead of max_vel/acc')
+    parser.add_argument('--travel-lvel', type=float, default=None,
+                        help='mm/s for empty travel movel (tag reader down/up, retreat from the box)')
     parser.add_argument('--load-speed', type=float, default=1.5625,
                         help='speed factor from the descend to the grasp until the release (holding the object)')
     parser.add_argument('--scan-wait', type=float, default=10.0,
@@ -1378,7 +1404,8 @@ def main(argv=None):
                         log('task_skipped', cycle=cycle, message=str(error))
                         if watch is not None:
                             watch.busy = False
-                            watch.report('IDLE', f'물품을 찾지 못해 작업을 건너뛰었습니다: {error}')
+                            watch.idle_note = f'물품을 찾지 못해 작업을 건너뛰었습니다: {error}'
+                            watch.report('IDLE', watch.idle_note)
                         continue
                     grasp_failed = isinstance(error, GraspFailed) and watch is not None
                     if not (watch is not None and watch.tripped.is_set()) and not grasp_failed:

@@ -85,3 +85,31 @@ def test_project_cycle_moves_faster_when_empty_than_when_holding(tmp_path):
     # the tag reader: down at the same speed as back up
     assert steps['label_scan_approach']['vel'] == v(10, travel)
     assert steps['label_scan']['vel'] == steps['label_scan_retract']['vel'] == v(30, travel)
+
+
+def test_travel_speed_only_for_empty_travel_moves(tmp_path):
+    """--travel-jvel/--travel-lvel speed up home, tag reader and back-from-box moves only, under poses.yaml
+    travel_max_vel; the approach, descend, carry and place keep their own (max_vel-capped) speeds."""
+    spec2 = importlib.util.spec_from_file_location('project_cycle', ROOT / 'scripts/project_cycle.py')
+    cycle = importlib.util.module_from_spec(spec2)
+    spec2.loader.exec_module(cycle)
+    log = tmp_path / 'fast.jsonl'
+    assert cycle.main(['--cycles', '1', '--log', str(log), '--jvel', '70', '--lvel', '70', '--dvel', '35.2',
+                       '--empty-speed', '1', '--travel-speed', '1', '--load-speed', '1',
+                       '--travel-jvel', '120', '--travel-lvel', '150']) == 0
+    steps = {}
+    for r in (json.loads(line) for line in log.read_text().splitlines()):
+        if r['event'] == 'step' and r['kind'] in ('movej', 'movel'):
+            steps.setdefault(r['name'], r['vel'])
+    fast = {'home': 120.0, 'label_scan_approach': 120.0, 'label_scan': 150.0, 'label_scan_retract': 150.0,
+            'box_retreat': 150.0, 'via_return': 120.0, 'home_return': 120.0}
+    slow = {'descend': 35.2, 'lift': 70.0, 'via_carry': 70.0, 'box_carry': 70.0, 'box_place': 35.2}
+    for name, vel in {**fast, **slow}.items():
+        if name in steps:
+            assert steps[name] == vel, (name, steps[name])
+    assert {'label_scan', 'box_retreat', 'descend', 'box_place', 'via_carry'} <= set(steps)
+    # still capped: a travel speed above travel_max_vel is refused before any motion
+    over = tmp_path / 'over.jsonl'
+    assert cycle.main(['--cycles', '1', '--log', str(over), '--travel-lvel', '400']) == 1
+    error = next(json.loads(line) for line in over.read_text().splitlines() if '"error"' in line)
+    assert error['type'] == 'SafetyLimitError' and '150.0' in error['message']

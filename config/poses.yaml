@@ -24,6 +24,10 @@ motion:
   # 실물 첫 실행은 30 이하 (README 안전 규칙). 2026-11-12: 빈 그리퍼 이동 2.25배(lvel 30 → 67.5) 허용을 위해 70으로 올림.
   max_vel: 70.0
   max_acc: 70.0
+  # 2026-11-14: 빈 손 이동(홈·리더기 왕복·상자에서 복귀)만 쓰는 상한. project_cycle.py --travel-jvel/--travel-lvel.
+  # 물품을 든 이동·물품 접근·하강은 위 max_vel/max_acc(70)를 그대로 따른다.
+  travel_max_vel: 150.0
+  travel_max_acc: 150.0
 
 poses:
   home:                     # YOLO 촬영 시 카메라 시야 밖이어야 함
